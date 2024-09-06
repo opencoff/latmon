@@ -14,13 +14,16 @@ import (
 func main() {
 	var interval, timeout time.Duration
 	var help, ver bool
+	var dir string
+	var bsz int
 
 	fs := pflag.NewFlagSet(Z,   pflag.ExitOnError)
 	fs.DurationVarP(&interval,  "every", "i", 2 * time.Second, "Send pings every `I` interval apart")
-
+	fs.IntVarP(&bsz, "batch-size", "b",  3600, "Collect 'B' samples per measurement run")
 	fs.DurationVarP(&timeout, "timeout", "t", 2 * time.Second, "Receive deadline wait period")
 	fs.BoolVarP(&help, "help", "h", false, "show this help message and exit")
 	fs.BoolVarP(&ver, "version", "", false, "show program version and exit")
+	fs.StringVarP(&dir, "output-dir", "d", ".", "Put charts in directory `D`")
 
 	err := fs.Parse(os.Args[1:])
 	if err != nil {
@@ -41,14 +44,42 @@ func main() {
 		usage(fs, "insufficient args")
 	}
 
+
+	var pingers []Pinger
+
 	for _, a := range args {
 		proto, host, port, err := parsePinger(a)
 		if err != nil {
 			Die(err.Error())
 		}
 
+		opt := PingOpts{
+			Host: host,
+			Port: port,
+			Proto: proto,
+			Interval: interval,
+			Timeout: timeout,
+		}
+
 		fmt.Printf("proto %s, host %s, port %d\n", proto, host, port)
+		switch proto {
+		case "icmp":
+			p, err := NewICMP(opt)
+			if err != nil {
+				Die("%s", err)
+			}
+			pingers = append(pingers, p)
+
+		default:
+			Warn("proto %s: TBD", proto)
+		}
 	}
+
+	mo := MeasureOpts{
+		BatchSize: bsz,
+		Output: dir,
+	}
+	mo = mo
 }
 
 func parsePinger(s string) (proto, host string, port uint16, err error) {
@@ -58,14 +89,15 @@ func parsePinger(s string) (proto, host string, port uint16, err error) {
 		return
 	}
 
-	proto = v[0]
+	proto = strings.ToLower(v[0])
 	host = v[1]
 
 	want := 2
 	switch proto {
-	case "icmp", "ICMP":
+	case "icmp":
 		// nothing to do
-	case "https", "quic", "QUIC":
+
+	case "https", "quic":
 		if len(v) != want {
 			err = fmt.Errorf("missing port# for proto '%s'", proto)
 			return
