@@ -52,9 +52,9 @@ func plotDurations(rtt []Rtt, fn string) error {
 		}),
 		charts.WithTooltipOpts(opts.Tooltip{Show: opts.Bool(true), Trigger: "item"}),
 		charts.WithDataZoomOpts(opts.DataZoom{
-			Type: "slider",
+			Type:  "slider",
 			Start: float32(0),
-			End: float32(n),
+			End:   float32(n),
 		}),
 	)
 

@@ -7,25 +7,27 @@ import (
 )
 
 type Pinger interface {
-	Ping(count int) (Result, error)
+	Stop()
 }
-
 
 type PingOpts struct {
-	Host	 string
-	Port	 uint16
-	Proto	 string
-	Interval time.Duration
-	Timeout  time.Duration
+	Host  string
+	Port  uint16
+	Proto string
+
+	Batchsize int
+	Interval  time.Duration
+	Timeout   time.Duration
 }
 
-type Result struct {
-	Rtt []time.Duration
-
-	// packets lost
-	Lost	int
-
-	// duplicate receives
-	Dups	int
+type IcmpResult struct {
+	Rtt time.Duration
 }
 
+type HttpsResult struct {
+	DnsRtt   time.Duration
+	ConnRtt  time.Duration
+	TlsRtt   time.Duration
+	HttpRtt  time.Duration
+	HttpsRtt time.Duration
+}

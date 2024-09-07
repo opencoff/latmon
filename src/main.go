@@ -1,15 +1,15 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
-	"fmt"
 
 	"github.com/opencoff/pflag"
 )
-
 
 func main() {
 	var interval, timeout time.Duration
@@ -17,10 +17,10 @@ func main() {
 	var dir string
 	var bsz int
 
-	fs := pflag.NewFlagSet(Z,   pflag.ExitOnError)
-	fs.DurationVarP(&interval,  "every", "i", 2 * time.Second, "Send pings every `I` interval apart")
-	fs.IntVarP(&bsz, "batch-size", "b",  3600, "Collect 'B' samples per measurement run")
-	fs.DurationVarP(&timeout, "timeout", "t", 2 * time.Second, "Receive deadline wait period")
+	fs := pflag.NewFlagSet(Z, pflag.ExitOnError)
+	fs.DurationVarP(&interval, "every", "i", 2*time.Second, "Send pings every `I` interval apart")
+	fs.IntVarP(&bsz, "batch-size", "b", 3600, "Collect 'B' samples per measurement run")
+	fs.DurationVarP(&timeout, "timeout", "t", 2*time.Second, "Receive deadline wait period")
 	fs.BoolVarP(&help, "help", "h", false, "show this help message and exit")
 	fs.BoolVarP(&ver, "version", "", false, "show program version and exit")
 	fs.StringVarP(&dir, "output-dir", "d", ".", "Put charts in directory `D`")
@@ -44,9 +44,7 @@ func main() {
 		usage(fs, "insufficient args")
 	}
 
-
-	var pingers []Pinger
-
+	ctx := context.Background()
 	for _, a := range args {
 		proto, host, port, err := parsePinger(a)
 		if err != nil {
@@ -54,32 +52,34 @@ func main() {
 		}
 
 		opt := PingOpts{
-			Host: host,
-			Port: port,
-			Proto: proto,
+			Host:     host,
+			Port:     port,
+			Proto:    proto,
 			Interval: interval,
-			Timeout: timeout,
+			Timeout:  timeout,
 		}
 
 		fmt.Printf("proto %s, host %s, port %d\n", proto, host, port)
 		switch proto {
 		case "icmp":
-			p, err := NewICMP(opt)
+			p, ich, err := NewIcmp(ctx, opt)
 			if err != nil {
 				Die("%s", err)
 			}
-			pingers = append(pingers, p)
+			ich = ich
+			p = p
 
+		case "https":
+			h, hch, err := NewHttps(ctx, opt)
+			if err != nil {
+				Die("%s", err)
+			}
+			hch = hch
+			h = h
 		default:
 			Warn("proto %s: TBD", proto)
 		}
 	}
-
-	mo := MeasureOpts{
-		BatchSize: bsz,
-		Output: dir,
-	}
-	mo = mo
 }
 
 func parsePinger(s string) (proto, host string, port uint16, err error) {
@@ -117,7 +117,6 @@ func parsePinger(s string) (proto, host string, port uint16, err error) {
 	}
 	return
 }
-
 
 func usage(fs *pflag.FlagSet, errstr string) {
 	var rc int
