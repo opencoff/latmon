@@ -1,7 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/go-echarts/go-echarts/v2/charts"
 	"github.com/go-echarts/go-echarts/v2/components"
@@ -22,7 +25,68 @@ type Rtt struct {
 	Http float64
 }
 
-func plotDurations(rtt []Rtt, fn string) error {
+func plotChart(o *outputCol, fn string) error {
+	line := charts.NewLine()
+
+	// set some global options like Title/Legend/ToolTip or anything else
+	line.SetGlobalOptions(
+		charts.WithInitializationOpts(opts.Initialization{Theme: types.ThemeWesteros}),
+		charts.WithTitleOpts(opts.Title{
+			Title:    fmt.Sprintf("RTT for %s", o.name),
+			Subtitle: "Various protocol latencies",
+		}),
+		charts.WithTooltipOpts(opts.Tooltip{Show: opts.Bool(true), Trigger: "item"}),
+		charts.WithDataZoomOpts(opts.DataZoom{
+			Type:  "slider",
+			Start: float32(0),
+			End:   float32(o.minlen),
+		}),
+	)
+
+	line.SetXAxis(makeXAxis(o.minlen))
+
+	for i, nm := range o.names {
+		v := durationToFloat64(o.colref[i][:o.minlen])
+		line.AddSeries(strings.ToTitle(nm), v)
+	}
+
+	o1 := charts.WithLineChartOpts(opts.LineChart{Smooth: opts.Bool(true), ShowSymbol: opts.Bool(true), SymbolSize: 5, Symbol: "diamond"})
+	o2 := charts.WithMarkLineNameTypeItemOpts(
+		opts.MarkLineNameTypeItem{Name: "Max", Type: "max"},
+		opts.MarkLineNameTypeItem{Name: "Avg", Type: "average"},
+	)
+
+	line.SetSeriesOptions(o1, o2)
+
+	page := components.NewPage()
+	page.AddCharts(line)
+	f, err := os.OpenFile(fn, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	page.Render(f)
+	return nil
+}
+
+func durationToFloat64(d []time.Duration) []opts.LineData {
+	f := make([]opts.LineData, len(d))
+	for i, v := range d {
+		f[i].Value = float64(v.Milliseconds())
+	}
+	return f
+}
+
+func makeXAxis(n int) []int {
+	x := make([]int, n)
+	for i := range n {
+		x[i] = i
+	}
+	return x
+}
+
+/*
+func plotDurations(o *outputCol, fn string) error {
 
 	n := len(rtt)
 	xaxis := make([]int, n)
@@ -84,3 +148,4 @@ func plotDurations(rtt []Rtt, fn string) error {
 	page.Render(f)
 	return nil
 }
+*/

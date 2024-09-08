@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/opencoff/pflag"
@@ -44,6 +46,8 @@ func main() {
 		usage(fs, "insufficient args")
 	}
 
+	m := NewMeasurer(WithOutputDir(dir), WithBatchSize(bsz))
+
 	ctx := context.Background()
 	for _, a := range args {
 		proto, host, port, err := parsePinger(a)
@@ -66,20 +70,35 @@ func main() {
 			if err != nil {
 				Die("%s", err)
 			}
-			ich = ich
-			p = p
+			m.AddIcmp(host, p, ich)
 
 		case "https":
 			h, hch, err := NewHttps(ctx, opt)
 			if err != nil {
 				Die("%s", err)
 			}
-			hch = hch
-			h = h
+			m.AddHttps(fmt.Sprintf("%s:%d", host, port), h, hch)
 		default:
 			Warn("proto %s: TBD", proto)
 		}
 	}
+
+	// now the work has kicked off. Wait for a signal to terminate
+	sigchan := make(chan os.Signal, 4)
+	signal.Notify(sigchan, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+
+	signal.Ignore(syscall.SIGPIPE, syscall.SIGFPE)
+
+	// Now wait for signals to arrive
+	for {
+		_ = <-sigchan
+		//t := s.(syscall.Signal)
+
+		//log.Info("Caught signal %d; Terminating ..\n", int(t))
+		break
+	}
+
+	m.Stop()
 }
 
 func parsePinger(s string) (proto, host string, port uint16, err error) {
