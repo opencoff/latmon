@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	logger "github.com/opencoff/go-logger"
 )
 
 type MeasureOpt func(o *measureOpt)
@@ -25,9 +27,16 @@ func WithBatchSize(sz int) MeasureOpt {
 	}
 }
 
+func WithLogger(log *logger.Logger) MeasureOpt {
+	return func(o *measureOpt) {
+		o.log = log
+	}
+}
+
 type measureOpt struct {
 	outdir    string
 	batchsize int
+	log       *logger.Logger
 }
 
 type Measurer struct {
@@ -57,7 +66,10 @@ func (m *Measurer) AddIcmp(host string, p Pinger, ich chan IcmpResult) {
 	if !ok {
 		hst = newHost(host, m.batchsize)
 		m.perHost[host] = hst
+
 	}
+
+	m.log.Debug("%s: adding icmp pinger ..", host)
 
 	// start a runner to harvest results
 	m.pingers = append(m.pingers, p)
@@ -72,6 +84,8 @@ func (m *Measurer) AddHttps(host string, p Pinger, hch chan HttpsResult) {
 		m.perHost[host] = hst
 	}
 
+	m.log.Debug("%s: adding https pinger ..", host)
+
 	// start a runner to harvest results
 	m.pingers = append(m.pingers, p)
 	m.wg.Add(1)
@@ -79,6 +93,8 @@ func (m *Measurer) AddHttps(host string, p Pinger, hch chan HttpsResult) {
 }
 
 func (m *Measurer) Stop() {
+	m.log.Info("stopping measurements ..")
+
 	// first stop all the individual pingers
 	for _, p := range m.pingers {
 		p.Stop()
@@ -143,6 +159,8 @@ func (m *Measurer) flush(hs *hostStats) {
 	// first gather the data and do the rest in an async way
 	o := hs.makeOutput()
 
+	m.log.Debug("flush: %s: %d samples [cols: %s]", o.name, o.minlen, strings.Join(o.names, ","))
+
 	// reset the start
 	hs.start = time.Now().UTC()
 
@@ -156,30 +174,33 @@ func (m *Measurer) asyncFlush(o *outputCol) {
 	chdir := path.Join(m.outdir, "charts", o.name)
 
 	stname := path.Join(stdir, fmt.Sprintf("%s.csv", fname))
-	chname := path.Join(stdir, fmt.Sprintf("%s.html", fname))
+	chname := path.Join(chdir, fmt.Sprintf("%s.html", fname))
 
 	err := os.MkdirAll(stdir, 0750)
 	if err != nil {
-		// XXX log and return
+		m.log.Warn("mkdir %s: %s", stdir, err)
+		return
 	}
 
 	err = os.MkdirAll(chdir, 0750)
 	if err != nil {
-		// XXX log and return
+		m.log.Warn("mkdir %s: %s", chdir, err)
+		return
 	}
 
 	// first write the telemetry
 	fd, err := os.OpenFile(stname, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_EXCL, 0640)
 	if err != nil {
-		// XXX log and return
+		m.log.Warn("can't create %s: %s", stname, err)
 	}
+
+	m.log.Debug("flush: %s: raw data: %s, chart: %s", o.name, stname, chname)
 
 	fmt.Fprintf(fd, "%s\n", strings.Join(o.names, ","))
 
-	// iterate over all rows
-	z := make([]string, o.minlen)
+	// iterate over all rows and write the raw nanosecond-granularity measurement
+	z := make([]string, len(o.names))
 	for i := 0; i < o.minlen; i++ {
-		// write one row at a time
 		for j, col := range o.colref {
 			z[j] = fmt.Sprintf("%d", col[i])
 		}
@@ -189,7 +210,7 @@ func (m *Measurer) asyncFlush(o *outputCol) {
 
 	// now plot and save the chart
 	if err = plotChart(o, chname); err != nil {
-		// XXX log error and return
+		m.log.Warn("can't create chart %s: %s", chname, err)
 	}
 }
 
@@ -197,7 +218,7 @@ func (h *hostStats) makeOutput() outputCol {
 	o := outputCol{
 		name:   h.name,
 		start:  h.start,
-		minlen: min(len(h.icmp), len(h.dns), len(h.tcp), len(h.tls), len(h.http), len(h.https)),
+		minlen: 10000000000,
 	}
 
 	// we store a ref to each of the slices and create new slices.
@@ -206,31 +227,37 @@ func (h *hostStats) makeOutput() outputCol {
 	if len(h.icmp) > 0 {
 		o.names = append(o.names, "icmp")
 		o.colref = append(o.colref, h.icmp)
+		o.minlen = min(o.minlen, len(h.icmp))
 		h.icmp = make([]time.Duration, 0, cap(h.icmp))
 	}
 	if len(h.dns) > 0 {
 		o.names = append(o.names, "dns")
 		o.colref = append(o.colref, h.dns)
+		o.minlen = min(o.minlen, len(h.dns))
 		h.dns = make([]time.Duration, 0, cap(h.dns))
 	}
 	if len(h.tcp) > 0 {
 		o.names = append(o.names, "tcp")
 		o.colref = append(o.colref, h.tcp)
+		o.minlen = min(o.minlen, len(h.tcp))
 		h.tcp = make([]time.Duration, 0, cap(h.tcp))
 	}
 	if len(h.tls) > 0 {
 		o.names = append(o.names, "tls")
 		o.colref = append(o.colref, h.tls)
+		o.minlen = min(o.minlen, len(h.tls))
 		h.tls = make([]time.Duration, 0, cap(h.tls))
 	}
 	if len(h.http) > 0 {
 		o.names = append(o.names, "http")
 		o.colref = append(o.colref, h.http)
+		o.minlen = min(o.minlen, len(h.http))
 		h.http = make([]time.Duration, 0, cap(h.http))
 	}
 	if len(h.https) > 0 {
 		o.names = append(o.names, "https")
 		o.colref = append(o.colref, h.https)
+		o.minlen = min(o.minlen, len(h.https))
 		h.https = make([]time.Duration, 0, cap(h.https))
 	}
 
@@ -252,6 +279,7 @@ func (m *Measurer) icmpWorker(hs *hostStats, p Pinger, ich chan IcmpResult) {
 
 func (m *Measurer) httpsWorker(hs *hostStats, p Pinger, hch chan HttpsResult) {
 	for r := range hch {
+		m.log.Debug("+new sample: %v", r)
 		hs.Lock()
 		if len(hs.https) == m.batchsize {
 			m.flush(hs)

@@ -4,6 +4,8 @@ package main
 
 import (
 	"time"
+
+	logger "github.com/opencoff/go-logger"
 )
 
 type Pinger interface {
@@ -18,6 +20,8 @@ type PingOpts struct {
 	Batchsize int
 	Interval  time.Duration
 	Timeout   time.Duration
+
+	Logger *logger.Logger
 }
 
 type IcmpResult struct {

@@ -10,22 +10,25 @@ import (
 	"syscall"
 	"time"
 
+	logger "github.com/opencoff/go-logger"
 	"github.com/opencoff/pflag"
 )
 
 func main() {
 	var interval, timeout time.Duration
 	var help, ver bool
-	var dir string
+	var dir, logdest, lvl string
 	var bsz int
 
 	fs := pflag.NewFlagSet(Z, pflag.ExitOnError)
 	fs.DurationVarP(&interval, "every", "i", 2*time.Second, "Send pings every `I` interval apart")
 	fs.IntVarP(&bsz, "batch-size", "b", 3600, "Collect 'B' samples per measurement run")
-	fs.DurationVarP(&timeout, "timeout", "t", 2*time.Second, "Receive deadline wait period")
-	fs.BoolVarP(&help, "help", "h", false, "show this help message and exit")
-	fs.BoolVarP(&ver, "version", "", false, "show program version and exit")
+	fs.DurationVarP(&timeout, "timeout", "t", 2*time.Second, "Set rx deadline to `T` seconds")
+	fs.BoolVarP(&help, "help", "h", false, "Show this help message and exit")
+	fs.BoolVarP(&ver, "version", "", false, "Show program version and exit")
 	fs.StringVarP(&dir, "output-dir", "d", ".", "Put charts in directory `D`")
+	fs.StringVarP(&logdest, "log", "L", "SYSLOG", "Send logs to destination `L`")
+	fs.StringVarP(&lvl, "log-level", "", "INFO", "Log at priority `P`")
 
 	err := fs.Parse(os.Args[1:])
 	if err != nil {
@@ -46,8 +49,20 @@ func main() {
 		usage(fs, "insufficient args")
 	}
 
-	m := NewMeasurer(WithOutputDir(dir), WithBatchSize(bsz))
+	prio, ok := logger.ToPriority(lvl)
+	if !ok {
+		Die("Unknown log level '%s'", lvl)
+	}
 
+	log, err := logger.NewLogger(logdest, prio, Z, logger.Ldate|logger.Ltime|logger.Lmicroseconds)
+	if err != nil {
+		Die("can't create logger: %s", err)
+	}
+
+	log.Info("Starting latency monitor [%s, %s]; batchsize=%d interval=%s timeout=%s",
+		ProductVersion, RepoVersion, bsz, interval, timeout)
+
+	m := NewMeasurer(WithOutputDir(dir), WithBatchSize(bsz), WithLogger(log))
 	ctx := context.Background()
 	for _, a := range args {
 		proto, host, port, err := parsePinger(a)
@@ -61,6 +76,7 @@ func main() {
 			Proto:    proto,
 			Interval: interval,
 			Timeout:  timeout,
+			Logger:   log,
 		}
 
 		fmt.Printf("proto %s, host %s, port %d\n", proto, host, port)
@@ -91,10 +107,10 @@ func main() {
 
 	// Now wait for signals to arrive
 	for {
-		_ = <-sigchan
-		//t := s.(syscall.Signal)
+		s := <-sigchan
+		t := s.(syscall.Signal)
 
-		//log.Info("Caught signal %d; Terminating ..\n", int(t))
+		log.Info("Caught signal %d; Terminating ..\n", int(t))
 		break
 	}
 
@@ -111,13 +127,12 @@ func parsePinger(s string) (proto, host string, port uint16, err error) {
 	proto = strings.ToLower(v[0])
 	host = v[1]
 
-	want := 2
 	switch proto {
 	case "icmp":
 		// nothing to do
 
 	case "https", "quic":
-		if len(v) != want {
+		if len(v) != 3 {
 			err = fmt.Errorf("missing port# for proto '%s'", proto)
 			return
 		}

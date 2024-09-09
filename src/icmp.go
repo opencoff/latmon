@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	logger "github.com/opencoff/go-logger"
 	ping "github.com/prometheus-community/pro-bing"
 )
 
@@ -16,6 +17,7 @@ type icmpPinger struct {
 	wg     sync.WaitGroup
 	ctx    context.Context
 	cancel context.CancelFunc
+	log    *logger.Logger
 }
 
 var _ Pinger = &icmpPinger{}
@@ -28,15 +30,19 @@ func NewIcmp(cx context.Context, opts PingOpts) (*icmpPinger, chan IcmpResult, e
 
 	ctx, cancel := context.WithCancel(cx)
 
+	log := opts.Logger.New("icmp", 0)
+
 	ip := &icmpPinger{
 		p:      p,
 		ch:     make(chan IcmpResult, 1),
 		ctx:    ctx,
 		cancel: cancel,
+		log:    log,
 	}
 
 	p.Interval = opts.Interval
 	p.Timeout = opts.Timeout
+	p.SetLogger(LogAdapter(log))
 
 	// by default we are NOT running as root
 	p.SetPrivileged(false)

@@ -20,11 +20,14 @@ var _ Pinger = &httpPinger{}
 func NewHttps(cx context.Context, opts PingOpts) (*httpPinger, chan HttpsResult, error) {
 	ch := make(chan HttpsResult, 1)
 
-	url := fmt.Sprintf("%s:%d", opts.Host, opts.Port)
+	log := opts.Logger.New("https", 0)
+
+	url := fmt.Sprintf("https://%s:%d", opts.Host, opts.Port)
 	ph := ping.NewHttpCaller(url,
 		ping.WithHTTPCallerMethod("HEAD"),
 		ping.WithHTTPCallerCallFrequency(opts.Interval),
 		ping.WithHTTPCallerTimeout(opts.Timeout),
+		ping.WithHTTPCallerLogger(LogAdapter(log)),
 		ping.WithHTTPCallerOnResp(func(s *ping.TraceSuite, _ *ping.HTTPCallInfo) {
 			r := HttpsResult{
 				DnsRtt:   getDnsRtt(s),
