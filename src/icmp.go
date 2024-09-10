@@ -4,8 +4,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"sync"
-	"time"
 
 	logger "github.com/opencoff/go-logger"
 	ping "github.com/prometheus-community/pro-bing"
@@ -41,7 +41,6 @@ func NewIcmp(cx context.Context, opts PingOpts) (*icmpPinger, chan IcmpResult, e
 	}
 
 	p.Interval = opts.Interval
-	p.Timeout = opts.Timeout
 	p.SetLogger(LogAdapter(log))
 
 	// by default we are NOT running as root
@@ -49,6 +48,9 @@ func NewIcmp(cx context.Context, opts PingOpts) (*icmpPinger, chan IcmpResult, e
 
 	// don't record RTTs, we'll process them here
 	p.RecordRtts = false
+
+	ip.log.Info("starting icmp pinger: %s, every %s, timeout %s",
+		opts.Host, opts.Interval, opts.Timeout)
 
 	ip.wg.Add(1)
 	go ip.loop()
@@ -66,34 +68,14 @@ func (ip *icmpPinger) loop() {
 	defer ip.wg.Done()
 
 	p := ip.p
-
-	maxWait := 5 * time.Second
-	n := uint64(maxWait) / uint64(p.Interval)
-	if n == 0 {
-		n = 3
-	}
-
 	p.OnRecv = func(pkt *ping.Packet) {
 		r := IcmpResult{
 			Rtt: pkt.Rtt,
 		}
 		ip.ch <- r
 	}
-	p.Count = int(n)
 
-	done := ip.ctx.Done()
-
-	// We loop indefinitely until we're closed
-	for {
-		select {
-		case <-done:
-			return
-		default:
-		}
-
-		// XXX Error??!
-		if err := p.Run(); err != nil {
-			err = err
-		}
+	if err := p.RunWithContext(ip.ctx); err != nil && !errors.Is(err, context.Canceled) {
+		ip.log.Warn("ICMP runner: %s", err)
 	}
 }

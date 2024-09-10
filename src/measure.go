@@ -66,10 +66,9 @@ func (m *Measurer) AddIcmp(host string, p Pinger, ich chan IcmpResult) {
 	if !ok {
 		hst = newHost(host, m.batchsize)
 		m.perHost[host] = hst
-
 	}
 
-	m.log.Debug("%s: adding icmp pinger ..", host)
+	m.log.Debug("%s: added icmp pinger ..", host)
 
 	// start a runner to harvest results
 	m.pingers = append(m.pingers, p)
@@ -84,7 +83,7 @@ func (m *Measurer) AddHttps(host string, p Pinger, hch chan HttpsResult) {
 		m.perHost[host] = hst
 	}
 
-	m.log.Debug("%s: adding https pinger ..", host)
+	m.log.Debug("%s: added https pinger ..", host)
 
 	// start a runner to harvest results
 	m.pingers = append(m.pingers, p)
@@ -120,17 +119,6 @@ type hostStats struct {
 	https []time.Duration
 }
 
-type validColMask uint
-
-const (
-	_ICMP validColMask = 1 << iota
-	_DNS
-	_TCP
-	_TLS
-	_HTTP
-	_HTTPS
-)
-
 func newHost(nm string, bsz int) *hostStats {
 	m := &hostStats{
 		name:  nm,
@@ -158,8 +146,6 @@ type outputCol struct {
 func (m *Measurer) flush(hs *hostStats) {
 	// first gather the data and do the rest in an async way
 	o := hs.makeOutput()
-
-	m.log.Debug("flush: %s: %d samples [cols: %s]", o.name, o.minlen, strings.Join(o.names, ","))
 
 	// reset the start
 	hs.start = time.Now().UTC()
@@ -194,6 +180,7 @@ func (m *Measurer) asyncFlush(o *outputCol) {
 		m.log.Warn("can't create %s: %s", stname, err)
 	}
 
+	m.log.Info("flush: %s: [%s] %d samples [cols: %s]", o.name, fname, o.minlen, strings.Join(o.names, ","))
 	m.log.Debug("flush: %s: raw data: %s, chart: %s", o.name, stname, chname)
 
 	fmt.Fprintf(fd, "%s\n", strings.Join(o.names, ","))
@@ -265,12 +252,16 @@ func (h *hostStats) makeOutput() outputCol {
 }
 
 func (m *Measurer) icmpWorker(hs *hostStats, p Pinger, ich chan IcmpResult) {
+	i := 0
 	for r := range ich {
+		i++
+		m.log.Debug("icmp: %d: %s\n", i, r.Rtt)
+
 		hs.Lock()
 		if len(hs.icmp) == m.batchsize {
+			i = 0
 			m.flush(hs)
 		}
-
 		hs.icmp = append(hs.icmp, r.Rtt)
 		hs.Unlock()
 	}
@@ -278,10 +269,15 @@ func (m *Measurer) icmpWorker(hs *hostStats, p Pinger, ich chan IcmpResult) {
 }
 
 func (m *Measurer) httpsWorker(hs *hostStats, p Pinger, hch chan HttpsResult) {
+	i := 0
 	for r := range hch {
-		m.log.Debug("+new sample: %v", r)
+		i++
 		hs.Lock()
+
+		m.log.Debug("https: %d: %s\n", i, r)
+
 		if len(hs.https) == m.batchsize {
+			i = 0
 			m.flush(hs)
 		}
 

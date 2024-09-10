@@ -3,6 +3,7 @@
 package main
 
 import (
+	"fmt"
 	"time"
 
 	logger "github.com/opencoff/go-logger"
@@ -34,4 +35,9 @@ type HttpsResult struct {
 	TlsRtt   time.Duration
 	HttpRtt  time.Duration
 	HttpsRtt time.Duration
+}
+
+func (h HttpsResult) String() string {
+	return fmt.Sprintf("dns: %s, tcp: %s, tls: %s, http: %s, e2e: %s",
+		h.DnsRtt, h.ConnRtt, h.TlsRtt, h.HttpRtt, h.HttpsRtt)
 }

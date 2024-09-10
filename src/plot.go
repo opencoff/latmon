@@ -1,3 +1,4 @@
+// plot.go - plot a html chart of latencies
 package main
 
 import (

@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"time"
 
 	ping "github.com/prometheus-community/pro-bing"
@@ -22,10 +23,25 @@ func NewHttps(cx context.Context, opts PingOpts) (*httpPinger, chan HttpsResult,
 
 	log := opts.Logger.New("https", 0)
 
+	// We will create a transport that always creates a new socket, dns resolution etc.
+	// This way we will capture all latencies (the default behavior of http.Client.Transport
+	// is to cache DNS lookups and per-host connections).
+	tr := http.Transport{
+		DisableKeepAlives:   true,
+		MaxIdleConns:        1,
+		MaxIdleConnsPerHost: 1,
+		MaxConnsPerHost:     1,
+		IdleConnTimeout:     1 * time.Millisecond,
+	}
+
+	cl := http.Client{
+		Transport: &tr,
+	}
 	url := fmt.Sprintf("https://%s:%d", opts.Host, opts.Port)
 	ph := ping.NewHttpCaller(url,
 		ping.WithHTTPCallerMethod("HEAD"),
 		ping.WithHTTPCallerCallFrequency(opts.Interval),
+		ping.WithHTTPCallerClient(&cl),
 		ping.WithHTTPCallerTimeout(opts.Timeout),
 		ping.WithHTTPCallerLogger(LogAdapter(log)),
 		ping.WithHTTPCallerOnResp(func(s *ping.TraceSuite, _ *ping.HTTPCallInfo) {
@@ -39,6 +55,9 @@ func NewHttps(cx context.Context, opts PingOpts) (*httpPinger, chan HttpsResult,
 			ch <- r
 		}),
 	)
+
+	log.Info("starting https pinger: %s, every %s, timeout %s",
+		opts.Host, opts.Interval, opts.Timeout)
 
 	go func() {
 		ph.RunWithContext(cx)

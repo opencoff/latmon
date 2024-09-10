@@ -1,3 +1,5 @@
+// main.go - main for ping latency monitor
+
 package main
 
 import (
@@ -54,7 +56,7 @@ func main() {
 		Die("Unknown log level '%s'", lvl)
 	}
 
-	log, err := logger.NewLogger(logdest, prio, Z, logger.Ldate|logger.Ltime|logger.Lmicroseconds)
+	log, err := logger.NewLogger(logdest, prio, Z, logger.Ldate|logger.Ltime|logger.Lmicroseconds|logger.Lfileloc)
 	if err != nil {
 		Die("can't create logger: %s", err)
 	}
@@ -79,7 +81,6 @@ func main() {
 			Logger:   log,
 		}
 
-		fmt.Printf("proto %s, host %s, port %d\n", proto, host, port)
 		switch proto {
 		case "icmp":
 			p, ich, err := NewIcmp(ctx, opt)
@@ -93,7 +94,7 @@ func main() {
 			if err != nil {
 				Die("%s", err)
 			}
-			m.AddHttps(fmt.Sprintf("%s:%d", host, port), h, hch)
+			m.AddHttps(host, h, hch)
 		default:
 			Warn("proto %s: TBD", proto)
 		}
@@ -168,7 +169,7 @@ Where PINGER is of the form:
 
 	icmp:HOST
 	https:HOST:port
-	quic:HOST:port
+	quic:HOST:port (TBD)
 
 Options:
 `, Z, Z)
