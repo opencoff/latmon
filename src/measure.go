@@ -11,6 +11,7 @@ import (
 	"time"
 
 	logger "github.com/opencoff/go-logger"
+	"github.com/opencoff/latmon/internal/plot"
 )
 
 type MeasureOpt func(o *measureOpt)
@@ -133,14 +134,6 @@ func newHost(nm string, bsz int) *hostStats {
 	return m
 }
 
-type outputCol struct {
-	name  string
-	start time.Time
-
-	names  []string
-	colref [][]time.Duration
-	minlen int
-}
 
 // flush this batch to disk and generate the charts
 func (m *Measurer) flush(hs *hostStats) {
@@ -154,10 +147,10 @@ func (m *Measurer) flush(hs *hostStats) {
 }
 
 // asynchronously flush data and generate charts
-func (m *Measurer) asyncFlush(o *outputCol) {
-	fname := o.start.Format("2006-01-02-15.04.05")
-	stdir := path.Join(m.outdir, "stats", o.name)
-	chdir := path.Join(m.outdir, "charts", o.name)
+func (m *Measurer) asyncFlush(o *plot.Columns) {
+	fname := o.Start.Format("2006-01-02-15.04.05")
+	stdir := path.Join(m.outdir, "stats", o.Name)
+	chdir := path.Join(m.outdir, "charts", o.Name)
 
 	stname := path.Join(stdir, fmt.Sprintf("%s.csv", fname))
 	chname := path.Join(chdir, fmt.Sprintf("%s.html", fname))
@@ -180,15 +173,15 @@ func (m *Measurer) asyncFlush(o *outputCol) {
 		m.log.Warn("can't create %s: %s", stname, err)
 	}
 
-	m.log.Info("flush: %s: [%s] %d samples [cols: %s]", o.name, fname, o.minlen, strings.Join(o.names, ","))
-	m.log.Debug("flush: %s: raw data: %s, chart: %s", o.name, stname, chname)
+	m.log.Info("flush: %s: [%s] %d samples [cols: %s]", o.Name, fname, o.Minlen, strings.Join(o.Names, ","))
+	m.log.Debug("flush: %s: raw data: %s, chart: %s", o.Name, stname, chname)
 
-	fmt.Fprintf(fd, "%s\n", strings.Join(o.names, ","))
+	fmt.Fprintf(fd, "%s\n", strings.Join(o.Names, ","))
 
 	// iterate over all rows and write the raw nanosecond-granularity measurement
-	z := make([]string, len(o.names))
-	for i := 0; i < o.minlen; i++ {
-		for j, col := range o.colref {
+	z := make([]string, len(o.Names))
+	for i := 0; i < o.Minlen; i++ {
+		for j, col := range o.Colref {
 			z[j] = fmt.Sprintf("%d", col[i])
 		}
 		fmt.Fprintf(fd, "%s\n", strings.Join(z, ","))
@@ -196,55 +189,55 @@ func (m *Measurer) asyncFlush(o *outputCol) {
 	fd.Close()
 
 	// now plot and save the chart
-	if err = plotChart(o, chname); err != nil {
+	if err = plot.Chart(o, chname); err != nil {
 		m.log.Warn("can't create chart %s: %s", chname, err)
 	}
 }
 
-func (h *hostStats) makeOutput() outputCol {
-	o := outputCol{
-		name:   h.name,
-		start:  h.start,
-		minlen: 10000000000,
+func (h *hostStats) makeOutput() plot.Columns {
+	o := plot.Columns{
+		Name:   h.name,
+		Start:  h.start,
+		Minlen: 10000000000,
 	}
 
 	// we store a ref to each of the slices and create new slices.
 	// This way, we can do the flush in an async goroutine and unblock the calling
 	// workers
 	if len(h.icmp) > 0 {
-		o.names = append(o.names, "icmp")
-		o.colref = append(o.colref, h.icmp)
-		o.minlen = min(o.minlen, len(h.icmp))
+		o.Names = append(o.Names, "icmp")
+		o.Colref = append(o.Colref, h.icmp)
+		o.Minlen = min(o.Minlen, len(h.icmp))
 		h.icmp = make([]time.Duration, 0, cap(h.icmp))
 	}
 	if len(h.dns) > 0 {
-		o.names = append(o.names, "dns")
-		o.colref = append(o.colref, h.dns)
-		o.minlen = min(o.minlen, len(h.dns))
+		o.Names = append(o.Names, "dns")
+		o.Colref = append(o.Colref, h.dns)
+		o.Minlen = min(o.Minlen, len(h.dns))
 		h.dns = make([]time.Duration, 0, cap(h.dns))
 	}
 	if len(h.tcp) > 0 {
-		o.names = append(o.names, "tcp")
-		o.colref = append(o.colref, h.tcp)
-		o.minlen = min(o.minlen, len(h.tcp))
+		o.Names = append(o.Names, "tcp")
+		o.Colref = append(o.Colref, h.tcp)
+		o.Minlen = min(o.Minlen, len(h.tcp))
 		h.tcp = make([]time.Duration, 0, cap(h.tcp))
 	}
 	if len(h.tls) > 0 {
-		o.names = append(o.names, "tls")
-		o.colref = append(o.colref, h.tls)
-		o.minlen = min(o.minlen, len(h.tls))
+		o.Names = append(o.Names, "tls")
+		o.Colref = append(o.Colref, h.tls)
+		o.Minlen = min(o.Minlen, len(h.tls))
 		h.tls = make([]time.Duration, 0, cap(h.tls))
 	}
 	if len(h.http) > 0 {
-		o.names = append(o.names, "http")
-		o.colref = append(o.colref, h.http)
-		o.minlen = min(o.minlen, len(h.http))
+		o.Names = append(o.Names, "http")
+		o.Colref = append(o.Colref, h.http)
+		o.Minlen = min(o.Minlen, len(h.http))
 		h.http = make([]time.Duration, 0, cap(h.http))
 	}
 	if len(h.https) > 0 {
-		o.names = append(o.names, "https")
-		o.colref = append(o.colref, h.https)
-		o.minlen = min(o.minlen, len(h.https))
+		o.Names = append(o.Names, "https")
+		o.Colref = append(o.Colref, h.https)
+		o.Minlen = min(o.Minlen, len(h.https))
 		h.https = make([]time.Duration, 0, cap(h.https))
 	}
 

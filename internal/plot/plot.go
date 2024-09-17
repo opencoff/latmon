@@ -1,5 +1,5 @@
 // plot.go - plot a html chart of latencies
-package main
+package plot
 
 import (
 	"fmt"
@@ -26,28 +26,37 @@ type Rtt struct {
 	Http float64
 }
 
-func plotChart(o *outputCol, fn string) error {
+type Columns struct {
+	Name  string
+	Start time.Time
+
+	Names  []string
+	Colref [][]time.Duration
+	Minlen int
+}
+
+func Chart(o *Columns, fn string) error {
 	line := charts.NewLine()
 
 	// set some global options like Title/Legend/ToolTip or anything else
 	line.SetGlobalOptions(
 		charts.WithInitializationOpts(opts.Initialization{Theme: types.ThemeWesteros}),
 		charts.WithTitleOpts(opts.Title{
-			Title:    fmt.Sprintf("RTT for %s", o.name),
+			Title:    fmt.Sprintf("RTT for %s", o.Name),
 			Subtitle: "Various protocol latencies",
 		}),
 		charts.WithTooltipOpts(opts.Tooltip{Show: opts.Bool(true), Trigger: "item"}),
 		charts.WithDataZoomOpts(opts.DataZoom{
 			Type:  "slider",
 			Start: float32(0),
-			End:   float32(o.minlen),
+			End:   float32(o.Minlen),
 		}),
 	)
 
-	line.SetXAxis(makeXAxis(o.minlen))
+	line.SetXAxis(makeXAxis(o.Minlen))
 
-	for i, nm := range o.names {
-		v := durationToFloat64(o.colref[i][:o.minlen])
+	for i, nm := range o.Names {
+		v := durationToFloat64(o.Colref[i][:o.Minlen])
 		line.AddSeries(strings.ToTitle(nm), v)
 	}
 
@@ -87,7 +96,7 @@ func makeXAxis(n int) []int {
 }
 
 /*
-func plotDurations(o *outputCol, fn string) error {
+func plotDurations(o *Columns, fn string) error {
 
 	n := len(rtt)
 	xaxis := make([]int, n)
