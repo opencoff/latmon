@@ -15,7 +15,7 @@
 
 # list of programs:
 #   srcdir:progname srcdir2:prog2 ...
-Progs="src:pinglat"
+Progs="src:latmon tools/merge:csvmerge"
 
 # Relative path to protobuf sources
 # e.g. src/foo/a.proto
