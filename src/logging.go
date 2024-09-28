@@ -8,12 +8,12 @@ import (
 )
 
 type logAdapter struct {
-	log *logger.Logger
+	log logger.Logger
 }
 
 var _ ping.Logger = &logAdapter{}
 
-func LogAdapter(log *logger.Logger) *logAdapter {
+func LogAdapter(log logger.Logger) *logAdapter {
 	return &logAdapter{log}
 }
 

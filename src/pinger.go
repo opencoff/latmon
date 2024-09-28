@@ -22,7 +22,7 @@ type PingOpts struct {
 	Interval  time.Duration
 	Timeout   time.Duration
 
-	Logger *logger.Logger
+	Logger logger.Logger
 }
 
 type IcmpResult struct {

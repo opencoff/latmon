@@ -31,7 +31,7 @@ func WithBatchSize(sz int) MeasureOpt {
 	}
 }
 
-func WithLogger(log *logger.Logger) MeasureOpt {
+func WithLogger(log logger.Logger) MeasureOpt {
 	return func(o *measureOpt) {
 		o.log = log
 	}
@@ -49,7 +49,7 @@ type measureOpt struct {
 	outdir    string
 	batchsize int
 	interval  time.Duration
-	log       *logger.Logger
+	log       logger.Logger
 }
 
 type Measurer struct {

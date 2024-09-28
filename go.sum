@@ -4,8 +4,8 @@ github.com/go-echarts/go-echarts/v2 v2.4.1 h1:imBFGngJ9zv/2zJVjK3k0uLL+LzyPDgzeV
 github.com/go-echarts/go-echarts/v2 v2.4.1/go.mod h1:56YlvzhW/a+du15f3S2qUGNDfKnFOeJSThBIrVFHDtI=
 github.com/google/uuid v1.6.0 h1:NIvaJDMOsjHA8n1jAhLSgzrAzy1Hgr+hNrb57e+94F0=
 github.com/google/uuid v1.6.0/go.mod h1:TIyPZe4MgqvfeYDBFedMoGGpEw/LqOeaOT+nhxU+yHo=
-github.com/opencoff/go-logger v0.6.0 h1:SswtDvWg82yJuSh1ctfDjbcOO0lHxXhBUX/4+ILqz9g=
-github.com/opencoff/go-logger v0.6.0/go.mod h1:dhRnw/605cByI6vleNQFb81ADuw3DH390BtkHoGY/uo=
+github.com/opencoff/go-logger v0.7.1 h1:vtjLgpckc9ZuJh+r/k344eqVaUpSSaOetKADLKkK+1k=
+github.com/opencoff/go-logger v0.7.1/go.mod h1:dhRnw/605cByI6vleNQFb81ADuw3DH390BtkHoGY/uo=
 github.com/opencoff/go-mmap v0.1.2 h1:2yrYleq0x9cBruDRTafs7GZt4tCYmsUlvyN77HnY9hA=
 github.com/opencoff/go-mmap v0.1.2/go.mod h1:+UjRnKQ3l5dLqSNAczz7zKI8LJ7mBhJhaSqU4S91tFs=
 github.com/opencoff/go-utils v0.9.8 h1:gL/zpjEd280Uyu5tF/0EMjC9q9m5bUDKyIDcPOYTAJA=
