@@ -46,6 +46,12 @@ func main() {
 		os.Exit(0)
 	}
 
+	// samples per day can't be smaller than batchsize
+	perDay := int((86400 * time.Second) / interval)
+	if bsz >= perDay {
+		Die("batch-size is greater than total samples per day (%d)", perDay)
+	}
+
 	args := fs.Args()
 	if len(args) < 0 {
 		usage(fs, "insufficient args")
@@ -66,10 +72,17 @@ func main() {
 
 	m := NewMeasurer(WithOutputDir(dir), WithBatchSize(bsz), WithLogger(log))
 	ctx := context.Background()
+	seen := make(map[string]bool)
 	for _, a := range args {
 		proto, host, port, err := parsePinger(a)
 		if err != nil {
 			Die(err.Error())
+		}
+
+		k := fmt.Sprintf("%s:%s:%d", proto, host, port)
+		if saw := seen[k]; saw {
+			Warn("%s: %s:%d - duplicate; skipping ..", proto, host, port)
+			continue
 		}
 
 		opt := PingOpts{
@@ -82,13 +95,6 @@ func main() {
 		}
 
 		switch proto {
-		case "icmp":
-			p, ich, err := NewIcmp(ctx, opt)
-			if err != nil {
-				Die("%s", err)
-			}
-			m.AddIcmp(host, p, ich)
-
 		case "https":
 			h, hch, err := NewHttps(ctx, opt)
 			if err != nil {

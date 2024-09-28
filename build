@@ -15,7 +15,8 @@
 
 # list of programs:
 #   srcdir:progname srcdir2:prog2 ...
-Progs="src:latmon tools/merge:csvmerge"
+#Progs="src:latmon tools/merge:csvmerge"
+Progs="src:latmon"
 
 # Relative path to protobuf sources
 # e.g. src/foo/a.proto

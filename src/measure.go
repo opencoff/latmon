@@ -1,5 +1,8 @@
 // measurer.go -- measurement on a per-host basis
 
+// Measurements are written to disk in "batches" ("batchsize")
+// And charts are generated daily.
+
 package main
 
 import (
@@ -34,22 +37,37 @@ func WithLogger(log *logger.Logger) MeasureOpt {
 	}
 }
 
+func WithInterval(ii time.Duration) MeasureOpt {
+	return func(o *measureOpt) {
+		if ii > 0 {
+			o.interval = ii
+		}
+	}
+}
+
 type measureOpt struct {
 	outdir    string
 	batchsize int
+	interval  time.Duration
 	log       *logger.Logger
 }
 
 type Measurer struct {
 	measureOpt
 
-	wg      sync.WaitGroup
-	perHost map[string]*hostStats
-	pingers []Pinger
+	wg           sync.WaitGroup
+	perHost      map[string]*hostStats
+	perHostDaily map[string]*plot.Columns
+	pingers      []Pinger
 }
 
 func NewMeasurer(opts ...MeasureOpt) *Measurer {
 	m := &Measurer{
+		measureOpt: measureOpt{
+			outdir:    "/tmp/latmon",
+			batchsize: 3600,
+			interval:  2 * time.Second,
+		},
 		perHost: make(map[string]*hostStats),
 		pingers: make([]Pinger, 0, 8),
 	}
@@ -59,29 +77,33 @@ func NewMeasurer(opts ...MeasureOpt) *Measurer {
 		fp(opt)
 	}
 
+	if m.log == nil {
+		var err error
+		m.log, err = logger.NewLogger("NONE", logger.LOG_INFO, "latmon", 0)
+		if err != nil {
+			panic("can't create empty logger")
+		}
+	}
+
 	return m
 }
 
-func (m *Measurer) AddIcmp(host string, p Pinger, ich chan IcmpResult) {
-	hst, ok := m.perHost[host]
-	if !ok {
-		hst = newHost(host, m.batchsize)
-		m.perHost[host] = hst
+func (m *Measurer) AddHttps(host string, p Pinger, hch chan HttpsResult) error {
+	stdir := path.Join(m.outdir, "stats", host)
+	chdir := path.Join(m.outdir, "charts", host)
+	err := os.MkdirAll(stdir, 0750)
+	if err != nil {
+		return fmt.Errorf("https: mkdir: %s: %w", stdir, err)
 	}
 
-	m.log.Debug("%s: added icmp pinger ..", host)
+	err = os.MkdirAll(chdir, 0750)
+	if err != nil {
+		return fmt.Errorf("https: mkdir: %s: %w", chdir, err)
+	}
 
-	// start a runner to harvest results
-	m.pingers = append(m.pingers, p)
-	m.wg.Add(1)
-	go m.icmpWorker(hst, p, ich)
-}
-
-func (m *Measurer) AddHttps(host string, p Pinger, hch chan HttpsResult) {
 	hst, ok := m.perHost[host]
 	if !ok {
-		hst = newHost(host, m.batchsize)
-		m.perHost[host] = hst
+		hst = m.newHost(host, stdir, chdir)
 	}
 
 	m.log.Debug("%s: added https pinger ..", host)
@@ -90,6 +112,8 @@ func (m *Measurer) AddHttps(host string, p Pinger, hch chan HttpsResult) {
 	m.pingers = append(m.pingers, p)
 	m.wg.Add(1)
 	go m.httpsWorker(hst, p, hch)
+
+	return nil
 }
 
 func (m *Measurer) Stop() {
@@ -111,7 +135,8 @@ type hostStats struct {
 	name  string
 	start time.Time
 
-	icmp []time.Duration
+	statsDir string
+	chartDir string
 
 	dns   []time.Duration
 	tcp   []time.Duration
@@ -120,61 +145,49 @@ type hostStats struct {
 	https []time.Duration
 }
 
-func newHost(nm string, bsz int) *hostStats {
-	m := &hostStats{
-		name:  nm,
-		start: time.Now().UTC(),
-		icmp:  make([]time.Duration, 0, bsz),
-		dns:   make([]time.Duration, 0, bsz),
-		tcp:   make([]time.Duration, 0, bsz),
-		tls:   make([]time.Duration, 0, bsz),
-		http:  make([]time.Duration, 0, bsz),
-		https: make([]time.Duration, 0, bsz),
+func (m *Measurer) newHost(nm, stats, charts string) *hostStats {
+	bsz := m.batchsize
+	h := &hostStats{
+		name:     nm,
+		start:    time.Now().UTC(),
+		statsDir: stats,
+		chartDir: charts,
+		dns:      make([]time.Duration, 0, bsz),
+		tcp:      make([]time.Duration, 0, bsz),
+		tls:      make([]time.Duration, 0, bsz),
+		http:     make([]time.Duration, 0, bsz),
+		https:    make([]time.Duration, 0, bsz),
 	}
-	return m
-}
 
-
-// flush this batch to disk and generate the charts
-func (m *Measurer) flush(hs *hostStats) {
-	// first gather the data and do the rest in an async way
-	o := hs.makeOutput()
-
-	// reset the start
-	hs.start = time.Now().UTC()
-
-	go m.asyncFlush(&o)
+	m.perHost[nm] = h
+	return h
 }
 
 // asynchronously flush data and generate charts
-func (m *Measurer) asyncFlush(o *plot.Columns) {
+func (m *Measurer) asyncFlush(o *plot.Columns, hs *hostStats) {
 	fname := o.Start.Format("2006-01-02-15.04.05")
-	stdir := path.Join(m.outdir, "stats", o.Name)
-	chdir := path.Join(m.outdir, "charts", o.Name)
+	stname := path.Join(hs.statsDir, fmt.Sprintf("%s.csv", fname))
+	chname := path.Join(hs.chartDir, fmt.Sprintf("%s.html", fname))
 
-	stname := path.Join(stdir, fmt.Sprintf("%s.csv", fname))
-	chname := path.Join(chdir, fmt.Sprintf("%s.html", fname))
+	m.log.Info("batch-flush: %s: [%s] %d samples [cols: %s]", o.Name, fname, o.Minlen, strings.Join(o.Names, ","))
+	m.log.Debug("batch-flush: %s: raw data: %s, chart: %s", o.Name, stname, chname)
 
-	err := os.MkdirAll(stdir, 0750)
-	if err != nil {
-		m.log.Warn("mkdir %s: %s", stdir, err)
-		return
+	if err := writeCharts(o, stname, chname); err != nil {
+		m.log.Warn("%s", err)
 	}
 
-	err = os.MkdirAll(chdir, 0750)
-	if err != nil {
-		m.log.Warn("mkdir %s: %s", chdir, err)
-		return
-	}
+	// now update the daily stats and see if we need to flush it as well
+	m.updateDailyStats(o, hs)
+	return
+}
 
-	// first write the telemetry
+// write telemetry and charts for 'o'
+func writeCharts(o *plot.Columns, stname, chname string) error {
+	// first write the telemetry/stats
 	fd, err := os.OpenFile(stname, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_EXCL, 0640)
 	if err != nil {
-		m.log.Warn("can't create %s: %s", stname, err)
+		return fmt.Errorf("create %s: %s", stname, err)
 	}
-
-	m.log.Info("flush: %s: [%s] %d samples [cols: %s]", o.Name, fname, o.Minlen, strings.Join(o.Names, ","))
-	m.log.Debug("flush: %s: raw data: %s, chart: %s", o.Name, stname, chname)
 
 	fmt.Fprintf(fd, "%s\n", strings.Join(o.Names, ","))
 
@@ -190,7 +203,55 @@ func (m *Measurer) asyncFlush(o *plot.Columns) {
 
 	// now plot and save the chart
 	if err = plot.Chart(o, chname); err != nil {
-		m.log.Warn("can't create chart %s: %s", chname, err)
+		return fmt.Errorf("create chart %s: %w", chname, err)
+	}
+	return nil
+}
+
+func (m *Measurer) updateDailyStats(o *plot.Columns, hs *hostStats) {
+	ds, ok := m.perHostDaily[hs.name]
+	if !ok {
+		ds = &plot.Columns{
+			Name:  o.Name,
+			Start: o.Start,
+			Names: o.Names,
+		}
+		m.perHostDaily[hs.name] = ds
+	}
+
+	perDay := int((86400 * time.Second) / m.interval)
+	minlen := perDay * 10000
+	for i := range o.Names {
+		col := ds.Colref[i]
+		if cap(col) < perDay {
+			col = make([]time.Duration, 0, perDay)
+		}
+		col = append(col, o.Colref[i]...)
+		minlen = min(minlen, len(col))
+		ds.Colref[i] = col
+	}
+
+	ds.Minlen = minlen
+	if len(ds.Colref[0]) < perDay {
+		return
+	}
+
+	// time to flush this daily accumulator
+
+	fname := ds.Start.Format("2006-01-02")
+	stname := path.Join(hs.statsDir, fmt.Sprintf("%s.csv", fname))
+	chname := path.Join(hs.chartDir, fmt.Sprintf("%s.html", fname))
+
+	m.log.Info("daily-flush: %s: [%s] %d samples [cols: %s]", ds.Name, fname, ds.Minlen, strings.Join(ds.Names, ","))
+	m.log.Debug("daily-flush: %s: raw data: %s, chart: %s", ds.Name, stname, chname)
+
+	if err := writeCharts(ds, stname, chname); err != nil {
+		m.log.Warn("%s", err)
+	}
+
+	// reset the daily counters
+	for i := range o.Names {
+		ds.Colref[i] = ds.Colref[i][:0]
 	}
 }
 
@@ -204,12 +265,6 @@ func (h *hostStats) makeOutput() plot.Columns {
 	// we store a ref to each of the slices and create new slices.
 	// This way, we can do the flush in an async goroutine and unblock the calling
 	// workers
-	if len(h.icmp) > 0 {
-		o.Names = append(o.Names, "icmp")
-		o.Colref = append(o.Colref, h.icmp)
-		o.Minlen = min(o.Minlen, len(h.icmp))
-		h.icmp = make([]time.Duration, 0, cap(h.icmp))
-	}
 	if len(h.dns) > 0 {
 		o.Names = append(o.Names, "dns")
 		o.Colref = append(o.Colref, h.dns)
@@ -241,39 +296,26 @@ func (h *hostStats) makeOutput() plot.Columns {
 		h.https = make([]time.Duration, 0, cap(h.https))
 	}
 
+	// reset the counter
+	h.start = time.Now().UTC()
+
 	return o
 }
 
-func (m *Measurer) icmpWorker(hs *hostStats, p Pinger, ich chan IcmpResult) {
-	i := 0
-	for r := range ich {
-		i++
-		m.log.Debug("icmp: %d: %s\n", i, r.Rtt)
-
-		hs.Lock()
-		if len(hs.icmp) == m.batchsize {
-			i = 0
-			m.flush(hs)
-		}
-		hs.icmp = append(hs.icmp, r.Rtt)
-		hs.Unlock()
-	}
-	m.wg.Done()
+// flush this batch to disk and generate the charts
+// This is called with the lock (on hs) held. Thus, we need to
+// do this part quickly
+func (m *Measurer) flush(hs *hostStats) {
+	o := hs.makeOutput()
+	go m.asyncFlush(&o, hs)
 }
 
 func (m *Measurer) httpsWorker(hs *hostStats, p Pinger, hch chan HttpsResult) {
-	i := 0
 	for r := range hch {
-		i++
 		hs.Lock()
-
-		m.log.Debug("https: %d: %s\n", i, r)
-
 		if len(hs.https) == m.batchsize {
-			i = 0
 			m.flush(hs)
 		}
-
 		hs.dns = append(hs.dns, r.DnsRtt)
 		hs.tcp = append(hs.tcp, r.ConnRtt)
 		hs.tls = append(hs.tls, r.TlsRtt)
