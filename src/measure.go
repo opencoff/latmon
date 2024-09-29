@@ -68,8 +68,9 @@ func NewMeasurer(opts ...MeasureOpt) *Measurer {
 			batchsize: 3600,
 			interval:  2 * time.Second,
 		},
-		perHost: make(map[string]*hostStats),
-		pingers: make([]Pinger, 0, 8),
+		perHost:      make(map[string]*hostStats),
+		perHostDaily: make(map[string]*plot.Columns),
+		pingers:      make([]Pinger, 0, 8),
 	}
 
 	opt := &m.measureOpt
