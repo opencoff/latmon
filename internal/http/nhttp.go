@@ -274,7 +274,7 @@ func (r *Response) read(rd *connCloser) error {
 	}
 
 	r.Headers = Header(mh)
-	if enc, ok := mh["Transfer-Encoding"]; ok && has(enc, "chunked") {
+	if has(r.Headers, "Transfer-Encoding", "chunked") {
 		r.Body = NewChunkedStreamReader(rd)
 	} else {
 		r.Body = rd
@@ -282,9 +282,10 @@ func (r *Response) read(rd *connCloser) error {
 	return nil
 }
 
-func has(stack []string, needle string) bool {
-	for i := range stack {
-		if stack[i] == needle {
+func has(h Header, key, needle string) bool {
+	stack := h.Values(key)
+	for _, s := range stack {
+		if s == needle {
 			return true
 		}
 	}

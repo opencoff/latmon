@@ -35,7 +35,9 @@ Prodver=""
 Repover=""
 Verbose=0
 Go=`which go`
+Arch=
 Bindir=$PWD/bin
+e=
 
 die() {
     echo "$Z: $@" 1>&2
@@ -268,7 +270,7 @@ done
 [ $Dryrun  -gt 0 ] && e=echo
 
 # let every error abort
-set -e
+set -e -u
 
 # build a tool that runs on the host - if needed.
 hosttool() {
@@ -357,22 +359,28 @@ else
     os=$hostos
     cpu=$hostcpu
     cross=$os-$cpu
+    export GOOS=$os GOARCH=$cpu
 fi
 
 # If we don't need CGO, then we can attempt a static link
-if [ -n "${cgo[$os]}" ]; then
+ldflags=
+isuffix=
+msg=
+if [ -n "cgo[$os]" ]; then
     export CGO_ENABLED=1
 
     # See if we have a specific cross-compiler for this CPU+OS combo
+    set +u
     xcc="${GOOS}_${GOARCH}"
-    xcc=${!xcc}
-    if [ -n "$xcc" ]; then
-        p=`type -p $xcc`
+    ycc=${!xcc}
+    if [ -n "$ycc" ]; then
+        p=`type -p $ycc`
         [ -n "$p" ] || die "Can't find $xcc! Do you have compilers for $GOARCH available in PATH?"
-        export CC=$xcc
+        export CC=$ycc
     else
         echo "$Z: No Cross compiler defined for $GOOS-$GOARCH. Build may fail.." 1>&2
     fi
+    set -u
 else
     if [ $Static -gt 0 ]; then
         export CGO_ENABLED=0
@@ -431,7 +439,7 @@ case $Tool in
 
     *) # Default is to build programs
         set -- $args
-        if [ -z "$1" ]; then
+        if [ $# -eq 0 ]; then
             all=$Progs
         else
             all="$@"
@@ -454,10 +462,16 @@ case $Tool in
             if [ "$GOOS" = "windows" ]; then
                 base=${out%%.exe}
                 out="${base}.exe"
+                old="${base}.prev.exe"
+            else
+                old="${out}.prev"
             fi
 
             echo "   $dir: $out .. "
-            $e eval $Go build $vflag -trimpath -buildvcs=false -o $Outdir/$out $isuffix "$ldflags" ./$dir || exit 1
+            outbin=$Outdir/$out
+            oldbin=$Outdir/$old
+            [ -f $outbin ] && mv -f $outbin $oldbin
+            $e eval $Go build $vflag -trimpath -buildvcs=false -o $outbin $isuffix "$ldflags" ./$dir || exit 1
         done
         ;;
 esac
