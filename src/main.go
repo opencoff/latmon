@@ -16,6 +16,10 @@ import (
 	"github.com/opencoff/pflag"
 )
 
+const (
+	_DefaultBatchSize int = 3600
+)
+
 func main() {
 	var interval, timeout time.Duration
 	var help, ver bool
@@ -24,7 +28,7 @@ func main() {
 
 	fs := pflag.NewFlagSet(Z, pflag.ExitOnError)
 	fs.DurationVarP(&interval, "every", "i", 2*time.Second, "Send pings every `I` interval apart")
-	fs.IntVarP(&bsz, "batch-size", "b", 3600, "Collect 'B' samples per measurement run")
+	fs.IntVarP(&bsz, "batch-size", "b", _DefaultBatchSize, "Collect 'B' samples per measurement run")
 	fs.DurationVarP(&timeout, "timeout", "t", 2*time.Second, "Set rx deadline to `T` seconds")
 	fs.BoolVarP(&help, "help", "h", false, "Show this help message and exit")
 	fs.BoolVarP(&ver, "version", "", false, "Show program version and exit")
@@ -134,20 +138,20 @@ func parsePinger(s string) (proto, host string, port uint16, err error) {
 	proto = strings.ToLower(v[0])
 	host = v[1]
 
+	// setup defaults for the port
 	switch proto {
-	case "icmp":
-		// nothing to do
+	case "http":
+		port = 80
+	case "https":
+		port = 443
+	//case "quic":
 
-	case "https", "quic":
-		if len(v) != 3 {
-			err = fmt.Errorf("missing port# for proto '%s'", proto)
-			return
-		}
 	default:
 		err = fmt.Errorf("unknown proto '%s'", proto)
 		return
 	}
 
+	// and allow user to override it
 	if len(v) > 2 {
 		var pv uint64
 		pv, err = strconv.ParseUint(v[2], 0, 16)
@@ -169,13 +173,13 @@ func usage(fs *pflag.FlagSet, errstr string) {
 
 	x := fmt.Sprintf(`%s: ping latency plotter
 
-Usage: %s [options] PINGER [PINGER..]
+Usage: %s [options] HOST [HOST..]
 
-Where PINGER is of the form:
+Where HOST is of the form:
 
-	icmp:HOST
-	https:HOST:port
-	quic:HOST:port (TBD)
+	https:hostname[:port]
+
+hostname - can be either an IP address or hostname.
 
 Options:
 `, Z, Z)

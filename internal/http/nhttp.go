@@ -274,6 +274,14 @@ func (r *Response) read(rd *connCloser) error {
 	}
 
 	r.Headers = Header(mh)
+	// XXX Reading body is convoluted --
+	//	if chunked-encoding:
+	//	    read_chunked()
+	//	else:
+	//	    switch content-length:
+	//		case -1: read_chunked()
+	//		case >= 0: read_simple_stream()
+	//		default: read_till_eof()
 	if has(r.Headers, "Transfer-Encoding", "chunked") {
 		r.Body = NewChunkedStreamReader(rd)
 	} else {

@@ -65,7 +65,7 @@ func NewMeasurer(opts ...MeasureOpt) *Measurer {
 	m := &Measurer{
 		measureOpt: measureOpt{
 			outdir:    "/tmp/latmon",
-			batchsize: 3600,
+			batchsize: _DefaultBatchSize,
 			interval:  2 * time.Second,
 		},
 		perHost:      make(map[string]*hostStats),
