@@ -14,21 +14,57 @@ import (
 	"math/rand/v2"
 	"net/url"
 	"strconv"
+
+	nh "net/http"
 )
 
-// HTTPRequest structure to hold HTTP method, headers, and body
-type HTTPRequest struct {
+type Header = nh.Header
+
+// Request structure to hold HTTP method, headers, and body
+type Request struct {
 	Method  string
 	URL     string
 	Host    string
 	Headers Header
-	Body    string
 }
 
-type Header map[string][]string
+func NewRequest(meth, url string) *Request {
+	r := &Request{
+		Method:  meth,
+		URL:     url,
+		Headers: make(Header),
+	}
+	return r
+}
+
+func (r *Request) write(conn net.Conn, uri string) error {
+	// make a big enough buffer
+	b := bufio.NewWriterSize(conn, 4096)
+
+	// Start with the request line
+	_, err := fmt.Fprintf(b, "%s %s HTTP/1.1\r\n", r.Method, uri)
+	if err != nil {
+		return err
+	}
+
+	// Add required headers
+	if vals := r.Headers.Get("host"); len(vals) == 0 {
+		r.Headers.Set("host", r.Host)
+	}
+
+	if err = r.Headers.Write(b); err != nil {
+		return err
+	}
+
+	if _, err = fmt.Fprintf(b, "\r\n"); err != nil {
+		return err
+	}
+
+	return b.Flush()
+}
 
 type Response struct {
-	Req *HTTPRequest
+	Req *Request
 
 	Proto      string
 	Status     string
@@ -43,20 +79,20 @@ type Response struct {
 	conn net.Conn
 }
 
-// HTTPClient to handle connections and requests
-type HTTPClient struct {
+// Client to handle connections and requests
+type Client struct {
 	Timeout time.Duration
 }
 
-// NewHTTPClient creates a new HTTP client with a specified timeout
-func NewHTTPClient(timeout time.Duration) *HTTPClient {
-	return &HTTPClient{
+// NewClient creates a new HTTP client with a specified timeout
+func NewClient(timeout time.Duration) *Client {
+	return &Client{
 		Timeout: timeout,
 	}
 }
 
 // Do sends an HTTP request and returns the response as a string
-func (c *HTTPClient) Do(req *HTTPRequest, ctx context.Context) (*Response, error) {
+func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 	u, err := url.Parse(req.URL)
 	if err != nil {
 		return nil, fmt.Errorf("http: url %s: %w", req.URL, err)
@@ -122,10 +158,13 @@ func (c *HTTPClient) Do(req *HTTPRequest, ctx context.Context) (*Response, error
 	}
 
 	// Build the HTTP request manually
-	httpRequest := buildHTTPRequest(req, u.RequestURI())
+	err = req.write(conn, u.RequestURI())
+	/*
+		httpRequest := buildRequest(req, u.RequestURI())
 
-	// Write the request to the connection
-	_, err = conn.Write([]byte(httpRequest))
+		// Write the request to the connection
+		_, err = conn.Write([]byte(httpRequest))
+	*/
 	if err != nil {
 		return nil, fmt.Errorf("http: write %s: %w", host, err)
 	}
@@ -147,7 +186,7 @@ func (c *HTTPClient) Do(req *HTTPRequest, ctx context.Context) (*Response, error
 	return resp, nil
 }
 
-func (c *HTTPClient) resolve(host string, ctx context.Context) (net.IP, error) {
+func (c *Client) resolve(host string, ctx context.Context) (net.IP, error) {
 	r := &net.Resolver{
 		PreferGo: true,
 	}
@@ -162,8 +201,8 @@ func (c *HTTPClient) resolve(host string, ctx context.Context) (net.IP, error) {
 	return ips[i], nil
 }
 
-// buildHTTPRequest creates the raw HTTP request string
-func buildHTTPRequest(req *HTTPRequest, path string) string {
+// buildRequest creates the raw HTTP request string
+func buildRequest(req *Request, path string) string {
 	// Start with the request line
 	request := fmt.Sprintf("%s %s HTTP/1.1\r\n", req.Method, path)
 
@@ -173,19 +212,8 @@ func buildHTTPRequest(req *HTTPRequest, path string) string {
 		request += fmt.Sprintf("%s: %s\r\n", key, value)
 	}
 
-	// Add content length if the body is provided
-	if req.Body != "" {
-		request += fmt.Sprintf("Content-Length: %d\r\n", len(req.Body))
-	}
-
 	// End the headers
 	request += "\r\n"
-
-	// Add the body if it's provided
-	if req.Body != "" {
-		request += req.Body
-	}
-
 	return request
 }
 
@@ -237,7 +265,6 @@ func readResponse(rd *connCloser, r *Response) error {
 	if enc, ok := mh["Transfer-Encoding"]; ok && has(enc, "chunked") {
 		fmt.Printf("using chunked encoding ..\n")
 		r.Body = NewChunkedStreamReader(rd)
-		//body = NewSimpleReader(rd, conn)
 	} else {
 		fmt.Printf("content-length: %v\n", mh["Content-Length"])
 		r.Body = rd

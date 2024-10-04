@@ -72,6 +72,10 @@ func (c *ChunkedStreamReader) readChunkSize() (int, error) {
 		return 0, err
 	}
 	line = strings.TrimSpace(line)
+	if len(line) == 0 {
+		return 0, nil
+	}
+
 	size, err := strconv.ParseUint(line, 16, 64)
 	if err != nil {
 		return 0, fmt.Errorf("invalid chunk size: %v", err)
