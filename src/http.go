@@ -24,7 +24,7 @@ type hping struct {
 	wg     sync.WaitGroup
 }
 
-var _ Pinger = &httpPinger{}
+var _ Pinger = &hping{}
 
 func NewHttps(cx context.Context, opts PingOpts) (*hping, chan HttpsResult, error) {
 	ctx, cancel := context.WithCancel(cx)
