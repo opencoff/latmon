@@ -64,7 +64,7 @@ func (h *hping) run() {
 	errs := 0
 	for {
 		select {
-		case _ = <-tick.C:
+		case <-tick.C:
 			h.log.Debug("ping %s ..", h.url)
 			resp, err := h.ping()
 			if err != nil {
@@ -88,7 +88,7 @@ func (h *hping) run() {
 				HttpsRtt: resp.E2e,
 			}
 
-		case _ = <-done:
+		case <-done:
 			return
 		}
 	}

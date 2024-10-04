@@ -169,6 +169,8 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 		}
 
 		tconn := tls.Client(conn, tcfg)
+
+		c.setDeadline(tconn)
 		if err = tconn.Handshake(); err != nil {
 			return nil, fmt.Errorf("http: tls %s: %w", taddr, err)
 		}
@@ -177,6 +179,7 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 	}
 
 	// Build the HTTP request manually
+	c.setWriteDeadline(conn)
 	st = time.Now()
 	err = req.write(conn, u.RequestURI())
 	if err != nil {
@@ -190,6 +193,7 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 	}
 
 	// Read the response from the connection
+	c.setReadDeadline(conn)
 	rx := newConnCloser(conn)
 	if err = resp.read(rx); err != nil {
 		return nil, err
@@ -202,6 +206,21 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 	resp.Http = http
 	resp.E2e = time.Now().Sub(start)
 	return resp, nil
+}
+
+func (c *Client) setDeadline(conn net.Conn) {
+	dl := time.Now().Add(c.Timeout)
+	conn.SetDeadline(dl)
+}
+
+func (c *Client) setReadDeadline(conn net.Conn) {
+	dl := time.Now().Add(c.Timeout)
+	conn.SetReadDeadline(dl)
+}
+
+func (c *Client) setWriteDeadline(conn net.Conn) {
+	dl := time.Now().Add(c.Timeout)
+	conn.SetWriteDeadline(dl)
 }
 
 func (c *Client) resolve(host string, ctx context.Context) (net.IP, error) {
