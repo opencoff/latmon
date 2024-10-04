@@ -11,20 +11,20 @@ import (
 )
 
 type ChunkedStreamReader struct {
-	rd io.ReadCloser
+	rd *connCloser
 
 	// current chunk size that is remaining
 	chunksz int
 }
 
-func NewChunkedStreamReader(rd io.ReadCloser) *ChunkedStreamReader {
+func NewChunkedStreamReader(rd *connCloser) *ChunkedStreamReader {
 	c := &ChunkedStreamReader{
 		rd: rd,
 	}
 	return c
 }
 
-func (c *ChunkedStreamReader) Read(b []byte) (int, error) {
+func (c *ChunkedStreamReader) Read(p []byte) (int, error) {
 	want := len(p)
 	b := p
 	tot := 0

@@ -3,12 +3,10 @@ package http
 import (
 	"bufio"
 	"crypto/tls"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/textproto"
-	"os"
 	"strings"
 	"time"
 
@@ -191,8 +189,8 @@ func buildHTTPRequest(req *HTTPRequest, path string) string {
 	return request
 }
 
-func readResponse(rd io.ReadCloser, r *Response) error {
-	tr := textproto.NewReader(rd)
+func readResponse(rd *connCloser, r *Response) error {
+	tr := textproto.NewReader(rd.Reader)
 
 	// parse the first line
 	line, err := tr.ReadLine()
@@ -229,14 +227,12 @@ func readResponse(rd io.ReadCloser, r *Response) error {
 		return err
 	}
 
-	r.Header = Header(mh)
+	r.Headers = Header(mh)
 
 	fmt.Printf("%s %s -- got headers\n", r.Proto, r.Status)
 	for k, v := range mh {
 		fmt.Printf("%s: %s\n", k, strings.Join(v, ";"))
 	}
-
-	var body io.ReadCloser
 
 	if enc, ok := mh["Transfer-Encoding"]; ok && has(enc, "chunked") {
 		fmt.Printf("using chunked encoding ..\n")
@@ -268,10 +264,11 @@ func newConnCloser(conn net.Conn) *connCloser {
 		Reader: bufio.NewReader(conn),
 		conn:   conn,
 	}
+	return r
 }
 
 func (c *connCloser) Read(p []byte) (int, error) {
-	return p.Reader.Read(p)
+	return c.Reader.Read(p)
 }
 
 func (c *connCloser) Close() error {
