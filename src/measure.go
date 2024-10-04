@@ -213,9 +213,9 @@ func (m *Measurer) updateDailyStats(o *plot.Columns, hs *hostStats) {
 	ds, ok := m.perHostDaily[hs.name]
 	if !ok {
 		ds = &plot.Columns{
-			Name:  o.Name,
-			Start: o.Start,
-			Names: o.Names,
+			Name:   o.Name,
+			Start:  o.Start,
+			Names:  o.Names,
 			Colref: make([][]time.Duration, len(o.Names)),
 		}
 		m.perHostDaily[hs.name] = ds

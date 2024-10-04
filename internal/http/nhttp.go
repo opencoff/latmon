@@ -1,3 +1,4 @@
+// http.go - simple http client to aid in timing measurements
 package http
 
 import (
@@ -74,6 +75,13 @@ type Response struct {
 
 	Body io.ReadCloser
 
+	// various timings
+	Dns  time.Duration
+	Tcp  time.Duration
+	Tls  time.Duration
+	Http time.Duration
+	E2e  time.Duration
+
 	// raw underlying connections
 	tls  *tls.Conn
 	conn net.Conn
@@ -82,17 +90,24 @@ type Response struct {
 // Client to handle connections and requests
 type Client struct {
 	Timeout time.Duration
+
+	resolv net.Resolver
 }
 
 // NewClient creates a new HTTP client with a specified timeout
 func NewClient(timeout time.Duration) *Client {
 	return &Client{
 		Timeout: timeout,
+		resolv: net.Resolver{
+			PreferGo: true,
+		},
 	}
 }
 
 // Do sends an HTTP request and returns the response as a string
 func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
+	start := time.Now()
+
 	u, err := url.Parse(req.URL)
 	if err != nil {
 		return nil, fmt.Errorf("http: url %s: %w", req.URL, err)
@@ -119,13 +134,17 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 
 	req.Host = host
 
+	var dns, tcp, ttls, http time.Duration
+
 	// see if "host" is an IP address or name
 	ip := net.ParseIP(host)
 	if ip == nil {
+		st := time.Now()
 		ip, err = c.resolve(host, ctx)
 		if err != nil {
 			return nil, fmt.Errorf("http: dns: %s: %w", host, err)
 		}
+		dns = time.Now().Sub(st)
 	}
 
 	taddr := &net.TCPAddr{
@@ -133,16 +152,17 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 		Port: port,
 	}
 
-	fmt.Printf("Connecting to %s .. \n", taddr)
-
 	var conn net.Conn
 	var tconn *tls.Conn
+	st := time.Now()
 	conn, err = net.DialTCP("tcp", nil, taddr)
 	if err != nil {
 		return nil, fmt.Errorf("http: dial %s: %w", taddr, err)
 	}
+	tcp = time.Now().Sub(st)
 
 	if u.Scheme == "https" {
+		st := time.Now()
 		// now setup TLS
 		tcfg := &tls.Config{
 			ServerName: host,
@@ -152,45 +172,40 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 		if err = tconn.Handshake(); err != nil {
 			return nil, fmt.Errorf("http: tls %s: %w", taddr, err)
 		}
-
-		fmt.Printf("+tls ok\n")
 		conn = tconn
+		ttls = time.Now().Sub(st)
 	}
 
 	// Build the HTTP request manually
+	st = time.Now()
 	err = req.write(conn, u.RequestURI())
-	/*
-		httpRequest := buildRequest(req, u.RequestURI())
-
-		// Write the request to the connection
-		_, err = conn.Write([]byte(httpRequest))
-	*/
 	if err != nil {
 		return nil, fmt.Errorf("http: write %s: %w", host, err)
 	}
 
-	fmt.Printf("+waiting for response ..\n")
-
 	resp := &Response{
-		Req: req,
-
+		Req:  req,
 		tls:  tconn,
 		conn: conn,
 	}
 
-	rx := newConnCloser(conn)
 	// Read the response from the connection
-	if err = readResponse(rx, resp); err != nil {
+	rx := newConnCloser(conn)
+	if err = resp.read(rx); err != nil {
 		return nil, err
 	}
+	http = time.Now().Sub(st)
+
+	resp.Dns = dns
+	resp.Tcp = tcp
+	resp.Tls = ttls
+	resp.Http = http
+	resp.E2e = time.Now().Sub(start)
 	return resp, nil
 }
 
 func (c *Client) resolve(host string, ctx context.Context) (net.IP, error) {
-	r := &net.Resolver{
-		PreferGo: true,
-	}
-
+	r := &c.resolv
 	ips, err := r.LookupIP(ctx, "ip4", host)
 	if err != nil {
 		return nil, fmt.Errorf("http: %s: %w", host, err)
@@ -201,23 +216,7 @@ func (c *Client) resolve(host string, ctx context.Context) (net.IP, error) {
 	return ips[i], nil
 }
 
-// buildRequest creates the raw HTTP request string
-func buildRequest(req *Request, path string) string {
-	// Start with the request line
-	request := fmt.Sprintf("%s %s HTTP/1.1\r\n", req.Method, path)
-
-	// Add required headers
-	request += fmt.Sprintf("Host: %s\r\n", req.Host)
-	for key, value := range req.Headers {
-		request += fmt.Sprintf("%s: %s\r\n", key, value)
-	}
-
-	// End the headers
-	request += "\r\n"
-	return request
-}
-
-func readResponse(rd *connCloser, r *Response) error {
+func (r *Response) read(rd *connCloser) error {
 	tr := textproto.NewReader(rd.Reader)
 
 	// parse the first line
@@ -256,17 +255,9 @@ func readResponse(rd *connCloser, r *Response) error {
 	}
 
 	r.Headers = Header(mh)
-
-	fmt.Printf("%s %s -- got headers\n", r.Proto, r.Status)
-	for k, v := range mh {
-		fmt.Printf("%s: %s\n", k, strings.Join(v, ";"))
-	}
-
 	if enc, ok := mh["Transfer-Encoding"]; ok && has(enc, "chunked") {
-		fmt.Printf("using chunked encoding ..\n")
 		r.Body = NewChunkedStreamReader(rd)
 	} else {
-		fmt.Printf("content-length: %v\n", mh["Content-Length"])
 		r.Body = rd
 	}
 	return nil

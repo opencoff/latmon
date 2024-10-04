@@ -18,7 +18,7 @@ type httpPinger struct {
 
 var _ Pinger = &httpPinger{}
 
-func NewHttps(cx context.Context, opts PingOpts) (*httpPinger, chan HttpsResult, error) {
+func NewHttpsOld(cx context.Context, opts PingOpts) (*httpPinger, chan HttpsResult, error) {
 	ch := make(chan HttpsResult, 1)
 
 	log := opts.Logger.New("https", 0)

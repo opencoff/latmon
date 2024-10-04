@@ -10,12 +10,16 @@ import (
 	"strings"
 )
 
+// ChunkedStreamReader offers a streaming reader interface that
+// accommodates arbitrary caller read sizes.
 type ChunkedStreamReader struct {
 	rd *connCloser
 
 	// current chunk size that is remaining
 	chunksz int
 }
+
+var _ io.ReadCloser = &ChunkedStreamReader{}
 
 func NewChunkedStreamReader(rd *connCloser) *ChunkedStreamReader {
 	c := &ChunkedStreamReader{
@@ -32,11 +36,11 @@ func (c *ChunkedStreamReader) Read(p []byte) (int, error) {
 	for want > 0 {
 		if c.chunksz == 0 {
 			n, err := c.readChunkSize()
+			if n == 0 || err == io.EOF {
+				return tot, io.EOF
+			}
 			if err != nil {
 				return tot, fmt.Errorf("chunked-reader: chunk size: %w", err)
-			}
-			if n == 0 {
-				return tot, io.EOF
 			}
 			c.chunksz = n
 		}
