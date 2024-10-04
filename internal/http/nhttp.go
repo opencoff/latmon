@@ -1,7 +1,6 @@
-package main
+package http
 
 import (
-	"os"
 	"bufio"
 	"crypto/tls"
 	"errors"
@@ -9,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/textproto"
+	"os"
 	"strings"
 	"time"
 
@@ -23,8 +23,26 @@ type HTTPRequest struct {
 	Method  string
 	URL     string
 	Host    string
-	Headers map[string]string
+	Headers Header
 	Body    string
+}
+
+type Header map[string][]string
+
+type Response struct {
+	Req *HTTPRequest
+
+	Proto      string
+	Status     string
+	StatusCode int
+
+	Headers Header
+
+	Body io.ReadCloser
+
+	// raw underlying connections
+	tls  *tls.Conn
+	conn net.Conn
 }
 
 // HTTPClient to handle connections and requests
@@ -84,6 +102,7 @@ func (c *HTTPClient) Do(req *HTTPRequest, ctx context.Context) (*Response, error
 	fmt.Printf("Connecting to %s .. \n", taddr)
 
 	var conn net.Conn
+	var tconn *tls.Conn
 	conn, err = net.DialTCP("tcp", nil, taddr)
 	if err != nil {
 		return nil, fmt.Errorf("http: dial %s: %w", taddr, err)
@@ -117,10 +136,14 @@ func (c *HTTPClient) Do(req *HTTPRequest, ctx context.Context) (*Response, error
 
 	resp := &Response{
 		Req: req,
+
+		tls:  tconn,
+		conn: conn,
 	}
 
+	rx := newConnCloser(conn)
 	// Read the response from the connection
-	if err = readResponse(conn, resp); err != nil {
+	if err = readResponse(rx, resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
@@ -168,8 +191,7 @@ func buildHTTPRequest(req *HTTPRequest, path string) string {
 	return request
 }
 
-func readResponse(conn net.Conn, r *Response) error {
-	rd := bufio.NewReader(conn)
+func readResponse(rd io.ReadCloser, r *Response) error {
 	tr := textproto.NewReader(rd)
 
 	// parse the first line
@@ -218,17 +240,14 @@ func readResponse(conn net.Conn, r *Response) error {
 
 	if enc, ok := mh["Transfer-Encoding"]; ok && has(enc, "chunked") {
 		fmt.Printf("using chunked encoding ..\n")
-		body = NewChunkedReader(rd, conn)
+		r.Body = NewChunkedStreamReader(rd)
 		//body = NewSimpleReader(rd, conn)
 	} else {
 		fmt.Printf("content-length: %v\n", mh["Content-Length"])
-		body = NewSimpleReader(rd, conn)
+		r.Body = rd
 	}
-	r.Body = body
 	return nil
 }
-
-type Header map[string][]string
 
 func has(stack []string, needle string) bool {
 	for i := range stack {
@@ -239,200 +258,22 @@ func has(stack []string, needle string) bool {
 	return false
 }
 
-type Response struct {
-	Req *HTTPRequest
-
-	Proto      string
-	Status     string
-	StatusCode int
-
-	Header Header
-
-	Body io.ReadCloser
+type connCloser struct {
+	*bufio.Reader
+	conn net.Conn
 }
 
-type simpleReader struct {
-	rd *bufio.Reader
-	raw io.ReadCloser
-}
-
-func NewSimpleReader(rd *bufio.Reader, raw io.ReadCloser) *simpleReader {
-	return &simpleReader{
-		rd: rd,
-		raw: raw,
+func newConnCloser(conn net.Conn) *connCloser {
+	r := &connCloser{
+		Reader: bufio.NewReader(conn),
+		conn:   conn,
 	}
 }
 
-func (c *simpleReader) Close() error {
-	fmt.Printf("simple reader closed\n")
-	return c.raw.Close()
+func (c *connCloser) Read(p []byte) (int, error) {
+	return p.Reader.Read(p)
 }
 
-func (c *simpleReader) Read(p []byte) (int, error) {
-	return c.rd.Read(p)
-}
-
-// ChunkedReader struct to handle chunked transfer encoding
-type ChunkedReader struct {
-	reader *bufio.Reader
-	raw io.ReadCloser
-}
-
-// NewChunkedReader creates a new ChunkedReader from a connection or any io.Reader
-func NewChunkedReader(rd *bufio.Reader, raw io.ReadCloser) *ChunkedReader {
-	return &ChunkedReader{
-		reader: rd,
-		raw: raw,
-	}
-}
-
-func (c *ChunkedReader) Close() error {
-	return c.raw.Close()
-}
-
-// Read implements the io.Reader interface for ChunkedReader
-// It reads and decodes the chunked transfer encoding from the stream
-func (cr *ChunkedReader) Read(p []byte) (int, error) {
-	var tot int
-
-	var i int
-	want := len(p)
-	b := p
-
-	for want > 0 {
-		n, err := cr.readChunkSize()
-		if err != nil {
-			return tot, err
-		}
-		if n == 0 {
-			return tot, io.EOF
-		}
-
-		if n > want {
-			// this is an error.
-			// We don't have a buffer large enough
-			// but we've already read the chunk size!
-			return tot, fmt.Errorf("chunked-reader: buffer too small (%d bytes of %d left); want %d",
-							want, len(p), n)
-		}
-
-		fmt.Printf("Chunk #%d: %d bytes\n", i, n)
-
-		// Read the chunk data
-		_, err = io.ReadFull(cr.reader, b[:n])
-		if err != nil {
-			return tot, fmt.Errorf("chunked-reader: chunk data: %w", err)
-		}
-
-		fmt.Printf("|")
-		os.Stdout.Write(b)
-		fmt.Printf("|\n")
-
-		// now skip the crlf
-		if err = cr.skipCRLF(); err != nil {
-			return tot, fmt.Errorf("chunked-reader: crlf: %w", err)
-		}
-		want -= n
-		b = b[n:]
-		i += 1
-	}
-	return len(p), nil
-}
-
-// readChunkSize reads the chunk size from the stream (hexadecimal format)
-func (cr *ChunkedReader) readChunkSize() (int, error) {
-	line, err := cr.reader.ReadString('\n')
-	if err != nil {
-		return 0, err
-	}
-	line = strings.TrimSpace(line)
-	size, err := strconv.ParseInt(line, 16, 64)
-	if err != nil {
-		return 0, fmt.Errorf("invalid chunk size: %v", err)
-	}
-	return int(size), nil
-}
-
-// skipCRLF skips the CRLF after a chunk
-func (cr *ChunkedReader) skipCRLF() error {
-	var buf [2]byte
-
-	n, err := io.ReadFull(cr.reader, buf[:])
-	if err != nil {
-		return err
-	}
-
-
-	fmt.Printf("CRLF: %d bytes => |%x|\n", n, buf[:n])
-
-	crlf := string(buf[:n])
-	if crlf != "\r\n" {
-		return errors.New("invalid CRLF after chunk")
-	}
-	return nil
-}
-
-// Example usage for GET, POST, PUT, DELETE, PATCH
-func main() {
-	client := NewHTTPClient(10 * time.Second)
-
-	// Example: GET request
-	getRequest := &HTTPRequest{
-		Method: "GET",
-		URL:    "https://www.google.com",
-		Headers: map[string]string{
-			"User-Agent": "Custom-Client",
-			"Connection": "close",
-		},
-	}
-
-	ctx := context.Background()
-	response, err := client.Do(getRequest, ctx)
-	if err != nil {
-		if err != io.EOF {
-			fmt.Printf("Error: %v\n", err)
-		}
-	} else {
-		fmt.Printf("Success! Body:\n")
-
-
-		buf := make([]byte, 1048576)
-		rd := response.Body
-		for {
-			n, err := rd.Read(buf[:])
-			if err != nil {
-				if err != io.EOF {
-					fmt.Printf("\n\nError reading body: %s\n", err)
-					os.Exit(1)
-				}
-			}
-			if n == 0 {
-				break
-			}
-			os.Stdout.Write(buf[:n])
-		}
-
-	}
-	response.Body.Close()
-
-	/*
-		// Example: POST request
-		postRequest := &HTTPRequest{
-			Method: "POST",
-			URL:    "http://example.com",
-			Headers: map[string]string{
-				"User-Agent":   "Custom-Client",
-				"Content-Type": "application/x-www-form-urlencoded",
-			},
-			Body: "key=value",
-		}
-		response, err = client.Do(postRequest)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-		} else {
-			fmt.Printf("POST Response:\n%s\n", response)
-		}
-
-		// Similar logic can be applied for PUT, DELETE, PATCH requests.
-	*/
+func (c *connCloser) Close() error {
+	return c.conn.Close()
 }
