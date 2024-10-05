@@ -157,7 +157,7 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 	st := time.Now()
 	conn, err = net.DialTCP("tcp", nil, taddr)
 	if err != nil {
-		return nil, fmt.Errorf("http: dial %s: %w", taddr, err)
+		return nil, fmt.Errorf("http: dial %s (%s): %w", host, taddr, err)
 	}
 	tcp = time.Now().Sub(st)
 
