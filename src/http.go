@@ -70,8 +70,8 @@ func (h *hping) run() {
 			if err != nil {
 				errs += 1
 				if errs > 3 {
-					h.log.Warn("%s\nToo many errors. Bailing ..")
-					return
+					h.log.Warn("%s\nToo many errors. Bailing ..", err)
+					Die("http: %s; too many errors. Exiting!", h.url)
 				}
 				h.log.Warn("%s", err)
 				continue
