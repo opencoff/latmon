@@ -187,7 +187,7 @@ func writeCharts(o *plot.Columns, stname, chname string) error {
 	// first write the telemetry/stats
 	fd, err := os.OpenFile(stname, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_EXCL, 0640)
 	if err != nil {
-		return fmt.Errorf("create %s: %s", stname, err)
+		return fmt.Errorf("create %s: %w", stname, err)
 	}
 
 	fmt.Fprintf(fd, "%s\n", strings.Join(o.Names, ","))
@@ -203,9 +203,13 @@ func writeCharts(o *plot.Columns, stname, chname string) error {
 	fd.Close()
 
 	// now plot and save the chart
-	if err = plot.Chart(o, chname); err != nil {
-		return fmt.Errorf("create chart %s: %w", chname, err)
+	fd, err = os.OpenFile(chname, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", chname, err)
 	}
+	err = plot.Chart(o, fd)
+
+	fd.Close()
 	return nil
 }
 
@@ -239,7 +243,6 @@ func (m *Measurer) updateDailyStats(o *plot.Columns, hs *hostStats) {
 	}
 
 	// time to flush this daily accumulator
-
 	fname := ds.Start.Format("2006-01-02")
 	stname := path.Join(hs.statsDir, fmt.Sprintf("%s.csv", fname))
 	chname := path.Join(hs.chartDir, fmt.Sprintf("%s.html", fname))
@@ -255,6 +258,9 @@ func (m *Measurer) updateDailyStats(o *plot.Columns, hs *hostStats) {
 	for i := range o.Names {
 		ds.Colref[i] = ds.Colref[i][:0]
 	}
+
+	// reset the daily-stats timestamp for the next batch
+	ds.Start = time.Now().UTC()
 }
 
 func (h *hostStats) makeOutput() plot.Columns {

@@ -71,6 +71,8 @@ type Response struct {
 	Status     string
 	StatusCode int
 
+	ContentLength int64
+
 	Headers Header
 
 	Body io.ReadCloser
@@ -134,7 +136,15 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 
 	req.Host = host
 
-	var dns, tcp, ttls, http time.Duration
+	resp := &Response{
+			Req: req,
+			Dns: -1,
+			Tcp: -1,
+			Tls: -1,
+			Http: -1,
+			E2e: -1,
+			ContentLength: -1,
+		}
 
 	// see if "host" is an IP address or name
 	ip := net.ParseIP(host)
@@ -142,9 +152,9 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 		st := time.Now()
 		ip, err = c.resolve(host, ctx)
 		if err != nil {
-			return nil, fmt.Errorf("http: dns: %s: %w", host, err)
+			return resp, fmt.Errorf("http: dns: %s: %w", host, err)
 		}
-		dns = time.Now().Sub(st)
+		resp.Dns = time.Now().Sub(st)
 	}
 
 	taddr := &net.TCPAddr{
@@ -153,13 +163,13 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 	}
 
 	var conn net.Conn
-	var tconn *tls.Conn
 	st := time.Now()
 	conn, err = net.DialTCP("tcp", nil, taddr)
 	if err != nil {
-		return nil, fmt.Errorf("http: dial %s (%s): %w", host, taddr, err)
+		return resp, fmt.Errorf("http: dial %s (%s): %w", host, taddr, err)
 	}
-	tcp = time.Now().Sub(st)
+	resp.Tcp = time.Now().Sub(st)
+	resp.conn = conn
 
 	if u.Scheme == "https" {
 		st := time.Now()
@@ -172,10 +182,11 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 
 		c.setDeadline(tconn)
 		if err = tconn.Handshake(); err != nil {
-			return nil, fmt.Errorf("http: tls %s: %w", taddr, err)
+			return resp, fmt.Errorf("http: tls %s: %w", taddr, err)
 		}
 		conn = tconn
-		ttls = time.Now().Sub(st)
+		resp.Tls = time.Now().Sub(st)
+		resp.tls = tconn
 	}
 
 	// Build the HTTP request manually
@@ -183,27 +194,16 @@ func (c *Client) Do(req *Request, ctx context.Context) (*Response, error) {
 	st = time.Now()
 	err = req.write(conn, u.RequestURI())
 	if err != nil {
-		return nil, fmt.Errorf("http: write %s: %w", host, err)
-	}
-
-	resp := &Response{
-		Req:  req,
-		tls:  tconn,
-		conn: conn,
+		return resp, fmt.Errorf("http: write %s: %w", host, err)
 	}
 
 	// Read the response from the connection
 	c.setReadDeadline(conn)
 	rx := newConnCloser(conn)
 	if err = resp.read(rx); err != nil {
-		return nil, err
+		return resp, err
 	}
-	http = time.Now().Sub(st)
-
-	resp.Dns = dns
-	resp.Tcp = tcp
-	resp.Tls = ttls
-	resp.Http = http
+	resp.Http = time.Now().Sub(st)
 	resp.E2e = time.Now().Sub(start)
 	return resp, nil
 }
@@ -235,6 +235,23 @@ func (c *Client) resolve(host string, ctx context.Context) (net.IP, error) {
 	return ips[i], nil
 }
 
+// Fetch content-length header and update response
+func (r *Response) getContentLength() (int64, error) {
+	v := r.Headers.Values("Content-Length")
+	if len(v) == 0 {
+		return -1, nil
+	}
+
+	r.ContentLength = 0
+	s := v[0]
+	cl, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("content-length '%s': %w", s, err)
+	}
+	r.ContentLength = cl
+	return cl, nil
+}
+
 func (r *Response) read(rd *connCloser) error {
 	tr := textproto.NewReader(rd.Reader)
 
@@ -242,7 +259,7 @@ func (r *Response) read(rd *connCloser) error {
 	line, err := tr.ReadLine()
 	if err != nil {
 		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
+			err = fmt.Errorf("http: read: %w", io.ErrUnexpectedEOF)
 		}
 		return err
 	}
@@ -257,35 +274,37 @@ func (r *Response) read(rd *connCloser) error {
 
 	statusCode, _, _ := strings.Cut(r.Status, " ")
 	if len(statusCode) != 3 {
-		return fmt.Errorf("malformed HTTP status code: %s", r.Status)
+		return fmt.Errorf("http: read: malformed HTTP status code: %s", r.Status)
 	}
 
 	r.StatusCode, err = strconv.Atoi(statusCode)
 	if err != nil || r.StatusCode < 0 {
-		return fmt.Errorf("malformed status code: %s", r.Status)
+		return fmt.Errorf("http: read: malformed status code: %s", r.Status)
 	}
 
 	mh, err := tr.ReadMIMEHeader()
 	if err != nil {
 		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
+			err = fmt.Errorf("http: read: %w", io.ErrUnexpectedEOF)
 		}
 		return err
 	}
 
 	r.Headers = Header(mh)
-	// XXX Reading body is convoluted --
-	//	if chunked-encoding:
-	//	    read_chunked()
-	//	else:
-	//	    switch content-length:
-	//		case -1: read_chunked()
-	//		case >= 0: read_simple_stream()
-	//		default: read_till_eof()
 	if has(r.Headers, "Transfer-Encoding", "chunked") {
 		r.Body = NewChunkedStreamReader(rd)
 	} else {
-		r.Body = rd
+		clen, err := r.getContentLength()
+		if err != nil {
+			return fmt.Errorf("http: read: content-length: %w", err)
+		}
+
+		if clen < 0 {
+			r.Body = NewChunkedStreamReader(rd)
+		} else {
+			// read till EOF
+			r.Body = rd
+		}
 	}
 	return nil
 }

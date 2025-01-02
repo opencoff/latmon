@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net"
 	"sync"
 	"time"
 
@@ -53,6 +54,15 @@ func (h *hping) Stop() {
 	h.log.Info("stopped https pinger: %s", h.url)
 }
 
+func errRetryable(err error) bool {
+	if ne, ok := err.(net.Error); ok {
+		if ne.Temporary() || ne.Timeout() {
+			return true
+		}
+	}
+	return false
+}
+
 func (h *hping) run() {
 	tick := time.NewTicker(h.Interval)
 	defer func() {
@@ -61,23 +71,16 @@ func (h *hping) run() {
 	}()
 
 	done := h.ctx.Done()
-	errs := 0
 	for {
 		select {
 		case <-tick.C:
 			h.log.Debug("ping %s ..", h.url)
 			resp, err := h.ping()
 			if err != nil {
-				errs += 1
-				if errs > 3 {
-					h.log.Warn("%s\nToo many errors. Bailing ..", err)
-					Die("http: %s; too many errors. Exiting!", h.url)
-				}
 				h.log.Warn("%s", err)
-				continue
+			} else {
+				resp.Body.Close()
 			}
-			errs = 0
-			resp.Body.Close()
 
 			// send out measurements
 			h.ch <- HttpsResult{
