@@ -93,10 +93,8 @@ Options:
 		return fmt.Errorf("can't create logger: %w", err)
 	}
 
-	log.Info("Starting latency monitor [%s, %s]; batchsize=%d interval=%s timeout=%s",
-		ProductVersion, RepoVersion, bsz, interval, timeout)
-
-	m := NewMeasurer(WithOutputDir(dir), WithBatchSize(bsz), WithLogger(log))
+	log.Info("Starting latency monitor [%s, %s]; network timeout %s", ProductVersion, RepoVersion, timeout)
+	m := NewMeasurer(WithOutputDir(dir), WithBatchSize(bsz), WithLogger(log), WithInterval(interval))
 	defer m.Stop()
 
 	ctx := context.Background()

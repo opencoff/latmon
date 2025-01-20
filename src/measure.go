@@ -55,10 +55,17 @@ type measureOpt struct {
 type Measurer struct {
 	measureOpt
 
+	batchesPerDay int
+
 	wg           sync.WaitGroup
 	perHost      map[string]*hostStats
-	perHostDaily map[string]*plot.Columns
+	perHostDaily map[string]*dailyStats
 	pingers      []Pinger
+}
+
+type dailyStats struct {
+	plot.Columns
+	batchNum int
 }
 
 func NewMeasurer(opts ...MeasureOpt) *Measurer {
@@ -69,7 +76,7 @@ func NewMeasurer(opts ...MeasureOpt) *Measurer {
 			interval:  2 * time.Second,
 		},
 		perHost:      make(map[string]*hostStats),
-		perHostDaily: make(map[string]*plot.Columns),
+		perHostDaily: make(map[string]*dailyStats),
 		pingers:      make([]Pinger, 0, 8),
 	}
 
@@ -78,13 +85,15 @@ func NewMeasurer(opts ...MeasureOpt) *Measurer {
 		fp(opt)
 	}
 
+	perday := int64((86400 * time.Second) / m.interval)
+	m.batchesPerDay = int(perday / int64(m.batchsize))
+
 	if m.log == nil {
-		var err error
-		m.log, err = logger.NewLogger("NONE", logger.LOG_INFO, "latmon", 0)
-		if err != nil {
-			panic("can't create empty logger")
-		}
+		m.log = logger.NewNoneLogger(logger.LOG_INFO, "latmon")
 	}
+
+	m.log.Info("monitor: sample every %s; %d samples/batch; %d batches/day", m.interval, m.batchsize, m.batchesPerDay)
+	m.log.Info("   output dir %s/{stats,charts}", m.outdir)
 
 	return m
 }
@@ -107,7 +116,7 @@ func (m *Measurer) AddHttps(host string, p Pinger, hch chan HttpsResult) error {
 		hst = m.newHost(host, stdir, chdir)
 	}
 
-	m.log.Debug("%s: added https pinger ..", host)
+	m.log.Debug("%s: added https pinger", host)
 
 	// start a runner to harvest results
 	m.pingers = append(m.pingers, p)
@@ -164,6 +173,60 @@ func (m *Measurer) newHost(nm, stats, charts string) *hostStats {
 	return h
 }
 
+func (m *Measurer) updateDailyStats(o *plot.Columns, hs *hostStats) {
+	ds, ok := m.perHostDaily[hs.name]
+	if !ok {
+		ds = &dailyStats{
+			Columns: plot.Columns{
+				Name:   o.Name,
+				Start:  o.Start,
+				Names:  o.Names,
+				Colref: make([][]time.Duration, len(o.Names)),
+			},
+			batchNum: 0,
+		}
+		m.perHostDaily[hs.name] = ds
+	}
+
+	minlen := m.batchesPerDay * 10000
+	for i := range o.Names {
+		col := ds.Colref[i]
+		if cap(col) < m.batchesPerDay {
+			col = make([]time.Duration, 0, m.batchesPerDay)
+		}
+		col = append(col, o.Colref[i]...)
+		minlen = min(minlen, len(col))
+		ds.Colref[i] = col
+	}
+
+	ds.Minlen = minlen
+	ds.batchNum += 1
+	if ds.batchNum < m.batchesPerDay {
+		return
+	}
+
+	// time to flush this daily accumulator
+	fname := ds.Start.Format("2006-01-02")
+	stname := path.Join(hs.statsDir, fmt.Sprintf("%s.csv", fname))
+	chname := path.Join(hs.chartDir, fmt.Sprintf("%s.html", fname))
+
+	m.log.Info("daily-flush: %s: [%s] %d samples [cols: %s]", ds.Name, fname, ds.Minlen, strings.Join(ds.Names, ","))
+	m.log.Debug("daily-flush: %s: raw data: %s, chart: %s", ds.Name, stname, chname)
+
+	if err := writeCharts(&ds.Columns, stname, chname); err != nil {
+		m.log.Warn("%s", err)
+	}
+
+	// reset the daily counters
+	for i := range o.Names {
+		ds.Colref[i] = ds.Colref[i][:0]
+	}
+
+	// reset the daily-stats timestamp for the next batch
+	ds.Start = time.Now().UTC()
+	ds.batchNum = 0
+}
+
 // asynchronously flush data and generate charts
 func (m *Measurer) asyncFlush(o *plot.Columns, hs *hostStats) {
 	fname := o.Start.Format("2006-01-02-15.04.05")
@@ -180,87 +243,6 @@ func (m *Measurer) asyncFlush(o *plot.Columns, hs *hostStats) {
 	// now update the daily stats and see if we need to flush it as well
 	m.updateDailyStats(o, hs)
 	return
-}
-
-// write telemetry and charts for 'o'
-func writeCharts(o *plot.Columns, stname, chname string) error {
-	// first write the telemetry/stats
-	fd, err := os.OpenFile(stname, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_EXCL, 0640)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", stname, err)
-	}
-
-	fmt.Fprintf(fd, "%s\n", strings.Join(o.Names, ","))
-
-	// iterate over all rows and write the raw nanosecond-granularity measurement
-	z := make([]string, len(o.Names))
-	for i := 0; i < o.Minlen; i++ {
-		for j, col := range o.Colref {
-			z[j] = fmt.Sprintf("%d", col[i])
-		}
-		fmt.Fprintf(fd, "%s\n", strings.Join(z, ","))
-	}
-	fd.Close()
-
-	// now plot and save the chart
-	fd, err = os.OpenFile(chname, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return fmt.Errorf("create %s: %w", chname, err)
-	}
-	err = plot.Chart(o, fd)
-
-	fd.Close()
-	return nil
-}
-
-func (m *Measurer) updateDailyStats(o *plot.Columns, hs *hostStats) {
-	ds, ok := m.perHostDaily[hs.name]
-	if !ok {
-		ds = &plot.Columns{
-			Name:   o.Name,
-			Start:  o.Start,
-			Names:  o.Names,
-			Colref: make([][]time.Duration, len(o.Names)),
-		}
-		m.perHostDaily[hs.name] = ds
-	}
-
-	perDay := int((86400 * time.Second) / m.interval)
-	minlen := perDay * 10000
-	for i := range o.Names {
-		col := ds.Colref[i]
-		if cap(col) < perDay {
-			col = make([]time.Duration, 0, perDay)
-		}
-		col = append(col, o.Colref[i]...)
-		minlen = min(minlen, len(col))
-		ds.Colref[i] = col
-	}
-
-	ds.Minlen = minlen
-	if len(ds.Colref[0]) < perDay {
-		return
-	}
-
-	// time to flush this daily accumulator
-	fname := ds.Start.Format("2006-01-02")
-	stname := path.Join(hs.statsDir, fmt.Sprintf("%s.csv", fname))
-	chname := path.Join(hs.chartDir, fmt.Sprintf("%s.html", fname))
-
-	m.log.Info("daily-flush: %s: [%s] %d samples [cols: %s]", ds.Name, fname, ds.Minlen, strings.Join(ds.Names, ","))
-	m.log.Debug("daily-flush: %s: raw data: %s, chart: %s", ds.Name, stname, chname)
-
-	if err := writeCharts(ds, stname, chname); err != nil {
-		m.log.Warn("%s", err)
-	}
-
-	// reset the daily counters
-	for i := range o.Names {
-		ds.Colref[i] = ds.Colref[i][:0]
-	}
-
-	// reset the daily-stats timestamp for the next batch
-	ds.Start = time.Now().UTC()
 }
 
 func (h *hostStats) makeOutput() plot.Columns {
@@ -332,4 +314,35 @@ func (m *Measurer) httpsWorker(hs *hostStats, p Pinger, hch chan HttpsResult) {
 		hs.Unlock()
 	}
 	m.wg.Done()
+}
+
+// write telemetry and charts for 'o'
+func writeCharts(o *plot.Columns, stname, chname string) error {
+	// first write the telemetry/stats
+	fd, err := os.OpenFile(stname, os.O_CREATE|os.O_TRUNC|os.O_WRONLY|os.O_EXCL, 0640)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", stname, err)
+	}
+
+	fmt.Fprintf(fd, "%s\n", strings.Join(o.Names, ","))
+
+	// iterate over all rows and write the raw nanosecond-granularity measurement
+	z := make([]string, len(o.Names))
+	for i := 0; i < o.Minlen; i++ {
+		for j, col := range o.Colref {
+			z[j] = fmt.Sprintf("%d", col[i])
+		}
+		fmt.Fprintf(fd, "%s\n", strings.Join(z, ","))
+	}
+	fd.Close()
+
+	// now plot and save the chart
+	fd, err = os.OpenFile(chname, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", chname, err)
+	}
+	err = plot.Chart(o, fd)
+
+	fd.Close()
+	return nil
 }
